@@ -12,6 +12,11 @@ reverie::Engine* Cast(reverie_engine* e) { return reinterpret_cast<reverie::Engi
 reverie_result MapResult(reverie::Result r) { return static_cast<reverie_result>(r); }
 } // namespace
 
+// The C-ABI event builder is just a heap-allocated runtime EventDesc being assembled.
+struct reverie_event_builder {
+    reverie::EventDesc desc;
+};
+
 extern "C" {
 
 reverie_config reverie_default_config(void) {
@@ -104,6 +109,82 @@ unsigned int reverie_active_voice_count(reverie_engine* engine) {
 
 unsigned int reverie_render_offline(reverie_engine* engine, float* out, unsigned int frame_count) {
     return engine != nullptr ? Cast(engine)->RenderOffline(out, frame_count) : 0u;
+}
+
+void reverie_set_max_voices(reverie_engine* engine, unsigned int count) {
+    if (engine != nullptr) Cast(engine)->SetMaxVoices(count);
+}
+
+void reverie_set_seed(reverie_engine* engine, unsigned long long seed) {
+    if (engine != nullptr) Cast(engine)->SetSeed(seed);
+}
+
+unsigned int reverie_real_voice_count(reverie_engine* engine) {
+    return engine != nullptr ? Cast(engine)->RealVoiceCount() : 0u;
+}
+
+unsigned int reverie_virtual_voice_count(reverie_engine* engine) {
+    return engine != nullptr ? Cast(engine)->VirtualVoiceCount() : 0u;
+}
+
+reverie_event_builder* reverie_event_builder_create(int priority, unsigned int max_instances,
+                                                    unsigned int concurrency_group) {
+    auto* b = new (std::nothrow) reverie_event_builder();
+    if (b != nullptr) {
+        b->desc.priority = priority;
+        b->desc.maxInstances = max_instances;
+        b->desc.concurrencyGroup = concurrency_group;
+    }
+    return b;
+}
+
+int reverie_event_builder_add_layer(reverie_event_builder* builder, float volume,
+                                    float volume_variance, float pitch, float pitch_variance,
+                                    int loop, float probability) {
+    if (builder == nullptr) return -1;
+    reverie::EventLayerDesc layer;
+    layer.volume = volume;
+    layer.volumeVariance = volume_variance;
+    layer.pitch = pitch;
+    layer.pitchVariance = pitch_variance;
+    layer.loop = loop != 0;
+    layer.probability = probability;
+    builder->desc.layers.push_back(std::move(layer));
+    return static_cast<int>(builder->desc.layers.size()) - 1;
+}
+
+void reverie_event_builder_add_sound(reverie_event_builder* builder, int layer,
+                                     reverie_sound sound, float weight) {
+    if (builder == nullptr || layer < 0) return;
+    if (static_cast<std::size_t>(layer) >= builder->desc.layers.size()) return;
+    builder->desc.layers[static_cast<std::size_t>(layer)].pool.push_back(
+        reverie::EventPoolEntry{sound, weight});
+}
+
+reverie_event reverie_event_builder_register(reverie_engine* engine,
+                                             reverie_event_builder* builder) {
+    if (engine == nullptr || builder == nullptr) {
+        delete builder;
+        return 0u;
+    }
+    const reverie_event id = Cast(engine)->RegisterEvent(builder->desc);
+    delete builder;
+    return id;
+}
+
+void reverie_event_builder_destroy(reverie_event_builder* builder) { delete builder; }
+
+reverie_event_instance reverie_play_event(reverie_engine* engine, reverie_event event,
+                                          float volume) {
+    return engine != nullptr ? Cast(engine)->PlayEvent(event, volume) : 0u;
+}
+
+void reverie_stop_event_instance(reverie_engine* engine, reverie_event_instance instance) {
+    if (engine != nullptr) Cast(engine)->StopEventInstance(instance);
+}
+
+unsigned int reverie_active_instance_count(reverie_engine* engine, reverie_event event) {
+    return engine != nullptr ? Cast(engine)->ActiveInstanceCount(event) : 0u;
 }
 
 } // extern "C"

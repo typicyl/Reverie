@@ -3,25 +3,39 @@
 // Copyright (c) Hollow Dream Studios. All rights reserved.
 #include "Reverie/Reverie.h"
 
-#include "Audio/AudioDecoder.h"
 #include "Audio/AudioEngine.h"
-
-#include <unordered_map>
 
 namespace reverie {
 
 struct Engine::Impl {
     AudioEngine engine;
-    std::unordered_map<SoundId, std::shared_ptr<const AudioBuffer>> sounds;
-    SoundId nextSound = 1;
-
-    SoundId Register(std::shared_ptr<const AudioBuffer> buffer) {
-        const SoundId id = nextSound++;
-        if (nextSound == kInvalidId) nextSound = 1;
-        sounds[id] = std::move(buffer);
-        return id;
-    }
 };
+
+namespace {
+
+AudioEventDef ToRuntime(const EventDesc& desc) {
+    AudioEventDef def;
+    def.priority = desc.priority;
+    def.maxInstances = desc.maxInstances;
+    def.concurrencyGroup = desc.concurrencyGroup;
+    def.layers.reserve(desc.layers.size());
+    for (const EventLayerDesc& l : desc.layers) {
+        EventLayer layer;
+        layer.volume = l.volume;
+        layer.volumeVariance = l.volumeVariance;
+        layer.pitch = l.pitch;
+        layer.pitchVariance = l.pitchVariance;
+        layer.loop = l.loop;
+        layer.probability = l.probability;
+        layer.pool.reserve(l.pool.size());
+        for (const EventPoolEntry& p : l.pool)
+            layer.pool.push_back(EventSound{p.sound, p.weight});
+        def.layers.push_back(std::move(layer));
+    }
+    return def;
+}
+
+} // namespace
 
 Engine::Engine() : impl_(std::make_unique<Impl>()) {}
 Engine::~Engine() = default;
@@ -32,6 +46,7 @@ Result Engine::Init(const Config& config) {
     ec.sampleRate = config.sampleRate;
     ec.channels = config.channels;
     ec.periodFrames = config.periodFrames;
+    ec.maxVoices = config.maxVoices;
     return impl_->engine.Init(ec);
 }
 
@@ -43,36 +58,36 @@ void Engine::SetMasterVolume(f32 volume) { impl_->engine.SetMasterVolume(volume)
 f32 Engine::MasterVolume() const { return impl_->engine.MasterVolume(); }
 u32 Engine::OutputChannels() const { return impl_->engine.OutputFormat().channels; }
 u32 Engine::OutputSampleRate() const { return impl_->engine.OutputFormat().sampleRate; }
+void Engine::SetMaxVoices(u32 count) { impl_->engine.SetMaxVoices(count); }
+void Engine::SetSeed(u64 seed) { impl_->engine.SetSeed(seed); }
 
-SoundId Engine::LoadSoundFile(const char* path) {
-    auto buffer = std::make_shared<AudioBuffer>();
-    if (Failed(AudioDecoder::DecodeFile(path, *buffer))) return kInvalidId;
-    return impl_->Register(std::move(buffer));
+SoundId Engine::LoadSoundFile(const char* path) { return impl_->engine.LoadFile(path); }
+SoundId Engine::LoadSoundPCM(const f32* interleaved, u32 frameCount, u32 channels, u32 sampleRate) {
+    return impl_->engine.LoadPCM(interleaved, frameCount, channels, sampleRate);
 }
-
-SoundId Engine::LoadSoundPCM(const f32* interleaved, u32 frameCount, u32 channels,
-                             u32 sampleRate) {
-    if (interleaved == nullptr || frameCount == 0 || channels == 0 || sampleRate == 0)
-        return kInvalidId;
-    auto buffer = std::make_shared<AudioBuffer>();
-    buffer->channels = channels;
-    buffer->sampleRate = sampleRate;
-    buffer->samples.assign(interleaved,
-                           interleaved + static_cast<usize>(frameCount) * channels);
-    return impl_->Register(std::move(buffer));
-}
-
-void Engine::UnloadSound(SoundId sound) { impl_->sounds.erase(sound); }
+void Engine::UnloadSound(SoundId sound) { impl_->engine.UnloadSound(sound); }
 
 VoiceId Engine::Play(SoundId sound, f32 volume, bool loop) {
-    auto it = impl_->sounds.find(sound);
-    if (it == impl_->sounds.end()) return kInvalidId;
-    return impl_->engine.PlayMemory(it->second, volume, loop);
+    return impl_->engine.PlaySound(sound, volume, loop);
 }
-
 void Engine::StopVoice(VoiceId voice) { impl_->engine.StopVoice(voice); }
 void Engine::StopAll() { impl_->engine.StopAll(); }
+
+EventId Engine::RegisterEvent(const EventDesc& desc) {
+    return impl_->engine.RegisterEvent(ToRuntime(desc));
+}
+void Engine::UnregisterEvent(EventId event) { impl_->engine.UnregisterEvent(event); }
+InstanceId Engine::PlayEvent(EventId event, f32 volume) {
+    return impl_->engine.PlayEvent(event, volume);
+}
+void Engine::StopEventInstance(InstanceId instance) { impl_->engine.StopInstance(instance); }
+u32 Engine::ActiveInstanceCount(EventId event) const {
+    return impl_->engine.ActiveInstanceCount(event);
+}
+
 u32 Engine::ActiveVoiceCount() const { return impl_->engine.ActiveVoiceCount(); }
+u32 Engine::RealVoiceCount() const { return impl_->engine.RealVoiceCount(); }
+u32 Engine::VirtualVoiceCount() const { return impl_->engine.VirtualVoiceCount(); }
 u32 Engine::RenderOffline(f32* out, u32 frameCount) {
     return impl_->engine.RenderOffline(out, frameCount);
 }

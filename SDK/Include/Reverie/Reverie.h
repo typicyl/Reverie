@@ -2,25 +2,25 @@
 //
 // Copyright (c) Hollow Dream Studios. All rights reserved.
 //
-// The stable, ABI-lean C++ surface a host links against. It exposes only Reverie's POD
-// vocabulary (Core/Types.h: Result + plain ids/vectors) and an opaque, pimpl'd Engine; no
-// runtime internals, no miniaudio, no backend type leaks through. Language bindings should
-// prefer the flat C ABI in <reverie.h>; this header is the ergonomic C++ path.
+// The stable, ABI-lean C++ surface a host links against. Exposes only Reverie's POD vocabulary
+// (Core/Types.h) plus event-authoring structs, and an opaque, pimpl'd Engine; no runtime
+// internals, no miniaudio, no backend type leaks through. Language bindings should prefer the
+// flat C ABI in <reverie.h>.
 //
 //   reverie::Engine engine;
 //   engine.Init({});
-//   reverie::SoundId fire = engine.LoadSoundFile("Weapons/Rifle_Fire.wav");
-//   engine.Play(fire);
+//   reverie::EventDesc fire; /* ...layers... */
+//   reverie::EventId id = engine.RegisterEvent(fire);
+//   engine.PlayEvent(id);
 #pragma once
 
 #include "Core/Types.h"
 
 #include <memory>
+#include <vector>
 
 namespace reverie {
 
-// Public mirror of the output backend (kept separate from the internal DeviceBackend so the
-// runtime enum can evolve without breaking the SDK).
 enum class Backend : u32 {
     Null = 0,      // headless: driven via RenderOffline (tests / CI / servers / offline render)
     Miniaudio = 1, // real playback device
@@ -29,8 +29,32 @@ enum class Backend : u32 {
 struct Config {
     Backend backend = Backend::Miniaudio;
     u32 sampleRate = 48000;
-    u32 channels = 2; // output channels (Phase 1: stereo)
+    u32 channels = 2;   // output channels (Phase 1/2: stereo)
     u32 periodFrames = 0;
+    u32 maxVoices = 64; // real-voice budget; the rest virtualize
+};
+
+// --- Event authoring (public mirror of the runtime layered-event model) ------------------
+struct EventPoolEntry {
+    SoundId sound = kInvalidId;
+    f32 weight = 1.0f; // relative weighted-random selection weight (>0)
+};
+
+struct EventLayerDesc {
+    std::vector<EventPoolEntry> pool; // weighted pick per trigger (empty = silent layer)
+    f32 volume = 1.0f;
+    f32 volumeVariance = 0.0f; // +/- linear gain applied randomly per trigger
+    f32 pitch = 1.0f;
+    f32 pitchVariance = 0.0f;
+    bool loop = false;
+    f32 probability = 1.0f; // 0..1 chance the layer triggers
+};
+
+struct EventDesc {
+    std::vector<EventLayerDesc> layers;
+    i32 priority = 0;         // handed to every voice this event spawns
+    u32 maxInstances = 0;     // 0 = unlimited; else steal the oldest instance
+    u32 concurrencyGroup = 0; // shared-limit key (0 = none)
 };
 
 // The audio engine. One per game/app instance. Not copyable.
@@ -44,8 +68,6 @@ public:
     Result Init(const Config& config);
     void Shutdown();
     bool IsInitialized() const;
-
-    // Real device control (no-op on the Null backend, which is pulled via RenderOffline).
     Result Start();
     Result Stop();
 
@@ -54,21 +76,33 @@ public:
     u32 OutputChannels() const;
     u32 OutputSampleRate() const;
 
-    // Loads a sound into memory. From an encoded file (WAV/FLAC/MP3) or from raw interleaved
-    // f32 PCM. Returns kInvalidId on failure.
+    // Real-voice budget (the rest virtualize) and the RNG seed for weighted pools / variance.
+    void SetMaxVoices(u32 count);
+    void SetSeed(u64 seed);
+
+    // -- Sounds ---------------------------------------------------------------------------
     SoundId LoadSoundFile(const char* path);
     SoundId LoadSoundPCM(const f32* interleaved, u32 frameCount, u32 channels, u32 sampleRate);
     void UnloadSound(SoundId sound);
 
-    // Plays a loaded sound. Returns a voice id (kInvalidId on failure). A playing voice keeps
-    // its sound alive even if UnloadSound is called.
+    // -- Direct one-off voice playback ----------------------------------------------------
     VoiceId Play(SoundId sound, f32 volume = 1.0f, bool loop = false);
     void StopVoice(VoiceId voice);
     void StopAll();
-    u32 ActiveVoiceCount() const;
 
-    // Offline pull of the whole graph (interleaved f32, OutputChannels()). For the Null
-    // backend / tests / the offline renderer. Returns frames written.
+    // -- Events (layered) -----------------------------------------------------------------
+    EventId RegisterEvent(const EventDesc& desc);
+    void UnregisterEvent(EventId event);
+    InstanceId PlayEvent(EventId event, f32 volume = 1.0f);
+    void StopEventInstance(InstanceId instance);
+    u32 ActiveInstanceCount(EventId event) const;
+
+    // -- Stats ----------------------------------------------------------------------------
+    u32 ActiveVoiceCount() const;  // real + virtual
+    u32 RealVoiceCount() const;    // currently mixed
+    u32 VirtualVoiceCount() const; // over budget, silent but tracked
+
+    // Offline pull of the whole graph (interleaved f32, OutputChannels()). Returns frames.
     u32 RenderOffline(f32* out, u32 frameCount);
 
 private:

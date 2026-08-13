@@ -31,6 +31,9 @@ extern "C" {
 typedef struct reverie_engine reverie_engine;
 typedef unsigned int reverie_sound;
 typedef unsigned int reverie_voice;
+typedef unsigned int reverie_event;
+typedef unsigned int reverie_event_instance;
+typedef struct reverie_event_builder reverie_event_builder;
 
 typedef enum reverie_backend {
     REVERIE_BACKEND_NULL = 0,
@@ -90,6 +93,36 @@ REVERIE_API unsigned int reverie_active_voice_count(reverie_engine* engine);
  * frames written. For the Null backend / tests / the offline renderer. */
 REVERIE_API unsigned int reverie_render_offline(reverie_engine* engine, float* out,
                                                 unsigned int frame_count);
+
+/* -- Voice management ------------------------------------------------------------------- */
+REVERIE_API void reverie_set_max_voices(reverie_engine* engine, unsigned int count);
+REVERIE_API void reverie_set_seed(reverie_engine* engine, unsigned long long seed);
+REVERIE_API unsigned int reverie_real_voice_count(reverie_engine* engine);
+REVERIE_API unsigned int reverie_virtual_voice_count(reverie_engine* engine);
+
+/* -- Events (layered) ------------------------------------------------------------------- *
+ * Build an event: create a builder, add layers, add weighted sounds to each layer, then
+ * register it (which frees the builder and returns an event id). */
+REVERIE_API reverie_event_builder* reverie_event_builder_create(int priority,
+                                                                unsigned int max_instances,
+                                                                unsigned int concurrency_group);
+/* Returns the new layer's index, or -1 on error. */
+REVERIE_API int reverie_event_builder_add_layer(reverie_event_builder* builder, float volume,
+                                                float volume_variance, float pitch,
+                                                float pitch_variance, int loop, float probability);
+REVERIE_API void reverie_event_builder_add_sound(reverie_event_builder* builder, int layer,
+                                                 reverie_sound sound, float weight);
+/* Registers the built event and destroys the builder. Returns the event id (0 on error). */
+REVERIE_API reverie_event reverie_event_builder_register(reverie_engine* engine,
+                                                         reverie_event_builder* builder);
+/* Destroys a builder you decided not to register. */
+REVERIE_API void reverie_event_builder_destroy(reverie_event_builder* builder);
+
+REVERIE_API reverie_event_instance reverie_play_event(reverie_engine* engine, reverie_event event,
+                                                      float volume);
+REVERIE_API void reverie_stop_event_instance(reverie_engine* engine,
+                                             reverie_event_instance instance);
+REVERIE_API unsigned int reverie_active_instance_count(reverie_engine* engine, reverie_event event);
 
 #ifdef __cplusplus
 } /* extern "C" */

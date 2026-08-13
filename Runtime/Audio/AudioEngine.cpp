@@ -3,14 +3,15 @@
 // Copyright (c) Hollow Dream Studios. All rights reserved.
 #include "Audio/AudioEngine.h"
 
+#include "Audio/AudioDecoder.h"
 #include "Core/Log.h"
 
-#include <algorithm>
 #include <cstring>
 
 namespace reverie {
 
-AudioEngine::AudioEngine() = default;
+AudioEngine::AudioEngine()
+    : events_(voices_, [this](SoundId s) { return GetSound(s); }) {}
 
 AudioEngine::~AudioEngine() { Shutdown(); }
 
@@ -28,11 +29,11 @@ Result AudioEngine::Init(const EngineConfig& config) {
         LogMessage(LogLevel::Error, "AudioEngine::Init: failed to create output device");
         return Result::DeviceError;
     }
-    // The device is authoritative for the final format (a real backend may negotiate).
-    format_ = device_->Format();
+    format_ = device_->Format(); // device is authoritative
+    voices_.SetMaxRealVoices(config.maxVoices);
     inited_ = true;
-    LogFormat(LogLevel::Info, "AudioEngine ready: %s, %u ch, %u Hz", device_->Name(),
-              format_.channels, format_.sampleRate);
+    LogFormat(LogLevel::Info, "AudioEngine ready: %s, %u ch, %u Hz, %u voice budget",
+              device_->Name(), format_.channels, format_.sampleRate, config.maxVoices);
     return Result::Ok;
 }
 
@@ -42,9 +43,11 @@ void AudioEngine::Shutdown() {
         device_->Stop();
         device_.reset();
     }
+    voices_.StopAll();
+    events_.StopAllInstances();
     {
-        std::lock_guard<std::mutex> lock(voiceMutex_);
-        voices_.clear();
+        std::lock_guard<std::mutex> lock(soundMutex_);
+        sounds_.clear();
     }
     inited_ = false;
 }
@@ -59,105 +62,61 @@ Result AudioEngine::Stop() {
     return device_->Stop();
 }
 
-VoiceId AudioEngine::PlayMemory(std::shared_ptr<const AudioBuffer> buffer, f32 volume, bool loop) {
-    if (!inited_ || !buffer || buffer->Empty()) return kInvalidId;
-    std::lock_guard<std::mutex> lock(voiceMutex_);
-    Voice v;
-    v.buffer = std::move(buffer);
-    v.cursor = 0.0;
-    v.volume = volume;
-    v.loop = loop;
-    v.state = VoiceState::Playing;
-    v.id = nextVoiceId_++;
-    if (nextVoiceId_ == kInvalidId) nextVoiceId_ = 1; // never issue 0
-    voices_.push_back(std::move(v));
-    return voices_.back().id;
+SoundId AudioEngine::RegisterSound(std::shared_ptr<const AudioBuffer> buffer) {
+    std::lock_guard<std::mutex> lock(soundMutex_);
+    const SoundId id = nextSound_++;
+    if (nextSound_ == kInvalidId) nextSound_ = 1;
+    sounds_[id] = std::move(buffer);
+    return id;
 }
 
-void AudioEngine::StopVoice(VoiceId id) {
-    if (id == kInvalidId) return;
-    std::lock_guard<std::mutex> lock(voiceMutex_);
-    for (Voice& v : voices_) {
-        if (v.id == id) {
-            v.state = VoiceState::Free; // reaped on the next render
-            break;
-        }
-    }
+SoundId AudioEngine::LoadPCM(const f32* interleaved, u32 frameCount, u32 channels, u32 sampleRate) {
+    if (interleaved == nullptr || frameCount == 0 || channels == 0 || sampleRate == 0)
+        return kInvalidId;
+    auto buffer = std::make_shared<AudioBuffer>();
+    buffer->channels = channels;
+    buffer->sampleRate = sampleRate;
+    buffer->samples.assign(interleaved,
+                           interleaved + static_cast<usize>(frameCount) * channels);
+    return RegisterSound(std::move(buffer));
+}
+
+SoundId AudioEngine::LoadFile(const char* path) {
+    auto buffer = std::make_shared<AudioBuffer>();
+    if (Failed(AudioDecoder::DecodeFile(path, *buffer))) return kInvalidId;
+    return RegisterSound(std::move(buffer));
+}
+
+void AudioEngine::UnloadSound(SoundId sound) {
+    std::lock_guard<std::mutex> lock(soundMutex_);
+    sounds_.erase(sound);
+}
+
+std::shared_ptr<const AudioBuffer> AudioEngine::GetSound(SoundId sound) const {
+    std::lock_guard<std::mutex> lock(soundMutex_);
+    auto it = sounds_.find(sound);
+    return it != sounds_.end() ? it->second : nullptr;
+}
+
+VoiceId AudioEngine::PlaySound(SoundId sound, f32 volume, bool loop) {
+    std::shared_ptr<const AudioBuffer> buffer = GetSound(sound);
+    if (!buffer) return kInvalidId;
+    VoiceSpawn spawn;
+    spawn.buffer = std::move(buffer);
+    spawn.volume = volume;
+    spawn.loop = loop;
+    return voices_.Play(spawn);
 }
 
 void AudioEngine::StopAll() {
-    std::lock_guard<std::mutex> lock(voiceMutex_);
-    voices_.clear();
-}
-
-u32 AudioEngine::ActiveVoiceCount() const {
-    std::lock_guard<std::mutex> lock(voiceMutex_);
-    u32 n = 0;
-    for (const Voice& v : voices_)
-        if (v.state == VoiceState::Playing) ++n;
-    return n;
-}
-
-void AudioEngine::MixVoicesLocked(f32* out, u32 frameCount, u32 channels) {
-    for (Voice& v : voices_) {
-        if (v.state != VoiceState::Playing || !v.buffer) continue;
-        const AudioBuffer& b = *v.buffer;
-        const u32 srcCh = b.channels;
-        const u32 srcFrames = b.FrameCount();
-        if (srcCh == 0 || srcFrames == 0) {
-            v.state = VoiceState::Free;
-            continue;
-        }
-        const f64 step = static_cast<f64>(b.sampleRate) / static_cast<f64>(format_.sampleRate);
-
-        for (u32 f = 0; f < frameCount; ++f) {
-            if (v.cursor >= static_cast<f64>(srcFrames)) {
-                if (v.loop) {
-                    while (v.cursor >= static_cast<f64>(srcFrames))
-                        v.cursor -= static_cast<f64>(srcFrames);
-                } else {
-                    v.state = VoiceState::Free;
-                    break;
-                }
-            }
-            const u32 i0 = static_cast<u32>(v.cursor);
-            const u32 i1 = (i0 + 1 < srcFrames) ? i0 + 1 : (v.loop ? 0u : i0);
-            const f32 frac = static_cast<f32>(v.cursor - static_cast<f64>(i0));
-
-            f32 sl, sr;
-            if (srcCh == 1) {
-                const f32 s0 = b.samples[i0];
-                const f32 s1 = b.samples[i1];
-                const f32 s = (s0 + (s1 - s0) * frac) * v.volume;
-                sl = s;
-                sr = s;
-            } else {
-                const f32 l0 = b.samples[static_cast<usize>(i0) * srcCh + 0];
-                const f32 l1 = b.samples[static_cast<usize>(i1) * srcCh + 0];
-                const f32 r0 = b.samples[static_cast<usize>(i0) * srcCh + 1];
-                const f32 r1 = b.samples[static_cast<usize>(i1) * srcCh + 1];
-                sl = (l0 + (l1 - l0) * frac) * v.volume;
-                sr = (r0 + (r1 - r0) * frac) * v.volume;
-            }
-            out[static_cast<usize>(f) * channels + 0] += sl;
-            if (channels >= 2) out[static_cast<usize>(f) * channels + 1] += sr;
-            v.cursor += step;
-        }
-    }
-
-    // Reap finished / stopped voices.
-    voices_.erase(std::remove_if(voices_.begin(), voices_.end(),
-                                 [](const Voice& v) { return v.state == VoiceState::Free; }),
-                  voices_.end());
+    events_.StopAllInstances();
+    voices_.StopAll();
 }
 
 void AudioEngine::RenderAudio(f32* output, u32 frameCount, u32 channels, u32 /*sampleRate*/) {
     if (output == nullptr || frameCount == 0 || channels == 0) return;
     std::memset(output, 0, static_cast<usize>(frameCount) * channels * sizeof(f32));
-    {
-        std::lock_guard<std::mutex> lock(voiceMutex_);
-        MixVoicesLocked(output, frameCount, channels);
-    }
+    voices_.Mix(output, frameCount, channels, format_.sampleRate);
     const f32 g = mixer_.MasterGain();
     if (g != 1.0f) {
         const usize n = static_cast<usize>(frameCount) * channels;
