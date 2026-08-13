@@ -36,8 +36,10 @@ public:
     void UnregisterEvent(EventId event);
     const AudioEventDef* Find(EventId event) const;
 
-    // Plays an event; returns an instance id (0 on failure / nothing triggered).
-    InstanceId PlayEvent(EventId event, f32 volume);
+    // Plays an event; returns an instance id (0 on failure / nothing triggered). When `spatial`,
+    // every layer voice is 3D at `position` (rendered by the spatial renderer).
+    InstanceId PlayEvent(EventId event, f32 volume, bool spatial = false,
+                         const Float3& position = Float3{});
     void StopInstance(InstanceId instance);
     void StopAllInstances();
 

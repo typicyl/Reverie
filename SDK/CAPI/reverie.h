@@ -60,6 +60,8 @@ typedef struct reverie_config {
     unsigned int sample_rate;
     unsigned int channels;
     unsigned int period_frames;
+    unsigned int max_voices;  /* real-voice budget (0 -> default 64) */
+    int use_resonance;        /* 1 -> HDS Resonance HRTF spatial backend if built, else panning */
 } reverie_config;
 
 /* Returns a zeroed-then-defaulted config (miniaudio, 48k, stereo). */
@@ -148,6 +150,23 @@ REVERIE_API void reverie_clear_duck(reverie_engine* engine, reverie_bus ducked);
 REVERIE_API float reverie_bus_meter(reverie_engine* engine, reverie_bus bus);
 REVERIE_API void reverie_capture_snapshot(reverie_engine* engine, const char* name);
 REVERIE_API int reverie_apply_snapshot(reverie_engine* engine, const char* name);
+
+/* -- Spatial (3D) ----------------------------------------------------------------------- *
+ * A default panning spatializer is active after init. World space is right-handed; the
+ * listener faces -Z by default. Positions are plain float triples. */
+REVERIE_API void reverie_set_listener(reverie_engine* engine, float px, float py, float pz,
+                                      float fx, float fy, float fz, float ux, float uy, float uz);
+REVERIE_API reverie_voice reverie_play_spatial(reverie_engine* engine, reverie_sound sound,
+                                               float px, float py, float pz, float volume,
+                                               int loop);
+REVERIE_API void reverie_set_voice_position(reverie_engine* engine, reverie_voice voice, float px,
+                                            float py, float pz);
+REVERIE_API reverie_event_instance reverie_play_event_at(reverie_engine* engine,
+                                                         reverie_event event, float px, float py,
+                                                         float pz, float volume);
+REVERIE_API reverie_bus reverie_spatial_bus(reverie_engine* engine);
+/* "Panning" or "Resonance" - the spatial backend actually in use. */
+REVERIE_API const char* reverie_spatial_backend_name(reverie_engine* engine);
 
 #ifdef __cplusplus
 } /* extern "C" */

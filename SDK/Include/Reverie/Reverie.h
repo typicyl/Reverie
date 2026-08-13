@@ -29,9 +29,12 @@ enum class Backend : u32 {
 struct Config {
     Backend backend = Backend::Miniaudio;
     u32 sampleRate = 48000;
-    u32 channels = 2;   // output channels (Phase 1/2: stereo)
+    u32 channels = 2;    // output channels (Phase 1/2: stereo)
     u32 periodFrames = 0;
-    u32 maxVoices = 64; // real-voice budget; the rest virtualize
+    u32 maxVoices = 64;  // real-voice budget; the rest virtualize
+    // Spatial backend: false = built-in panning; true = HDS Resonance HRTF (used only if Reverie
+    // was built with the Resonance backend, else it transparently falls back to panning).
+    bool useResonance = false;
 };
 
 // --- Event authoring (public mirror of the runtime layered-event model) ------------------
@@ -101,6 +104,18 @@ public:
     f32 BusMeter(BusId bus) const; // last block's peak level
     void CaptureSnapshot(const char* name);
     bool ApplySnapshot(const char* name);
+
+    // -- Spatial (3D) ---------------------------------------------------------------------
+    // A default panning spatializer is active after Init (positions in world space,
+    // right-handed, listener facing -Z by default). Spatial voices/events mix through the
+    // Spatial bus.
+    void SetListener(const Float3& position, const Float3& forward, const Float3& up);
+    VoiceId PlaySpatial(SoundId sound, const Float3& position, f32 volume = 1.0f, bool loop = false);
+    void SetVoicePosition(VoiceId voice, const Float3& position);
+    InstanceId PlayEventAt(EventId event, const Float3& position, f32 volume = 1.0f);
+    BusId SpatialBus() const;
+    // "Panning" or "Resonance" - the spatial backend actually in use after Init.
+    const char* SpatialBackendName() const;
 
     // -- Sounds ---------------------------------------------------------------------------
     SoundId LoadSoundFile(const char* path);

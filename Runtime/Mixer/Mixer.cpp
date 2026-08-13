@@ -21,7 +21,7 @@ Mixer::Mixer() {
 }
 
 void Mixer::ConfigureDefault() {
-    const char* names[] = {"Music", "SFX", "Dialogue", "Ambience", "UI"};
+    const char* names[] = {"Music", "SFX", "Dialogue", "Ambience", "UI", "Spatial"};
     for (const char* n : names)
         if (FindBus(n) == kInvalidId) CreateBus(n, master_);
 }

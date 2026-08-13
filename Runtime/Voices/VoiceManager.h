@@ -16,6 +16,7 @@
 
 #include "Audio/AudioBuffer.h"
 #include "Core/Types.h"
+#include "Spatial/SpatialRenderer.h"
 #include "Voices/Voice.h"
 
 #include <memory>
@@ -35,12 +36,27 @@ struct VoiceSpawn {
     InstanceId eventInstance = 0;
     u32 concurrencyGroup = 0;
     BusId bus = kInvalidId; // routing target (kInvalidId = Master)
+
+    // Spatial (3D): when `spatial`, the voice is rendered by the spatial renderer at `position`
+    // instead of the flat upmix, and its output goes to the mixer's Spatial bus.
+    bool spatial = false;
+    Float3 position;
+    SpatialQuality quality = SpatialQuality::Panning;
+    f32 minDistance = 1.0f;
+    f32 maxDistance = 100.0f;
 };
 
 class VoiceManager {
 public:
+    // Optional spatial renderer. When set, spatial voices claim a source slot from it, submit
+    // their mono signal each block, and its stereo mix is added to the mixer's Spatial bus.
+    void SetSpatialRenderer(ISpatialRenderer* renderer) { spatial_ = renderer; }
+
     void SetMaxRealVoices(u32 count); // 0 is treated as 1 (never zero the budget)
     u32 MaxRealVoices() const;
+
+    // Updates a live spatial voice's world position (no-op if the voice is gone / not spatial).
+    void SetVoicePosition(VoiceId id, const Float3& position);
 
     VoiceId Play(const VoiceSpawn& spawn); // kInvalidId if buffer is empty
     void Stop(VoiceId id);
@@ -62,9 +78,12 @@ public:
 
 private:
     void ReprioritizeLocked();
+    void ReapLocked(); // releases spatial slots of finished voices, then erases them
 
     mutable std::mutex mutex_;
     std::vector<Voice> voices_;
+    ISpatialRenderer* spatial_ = nullptr;
+    std::vector<f32> monoTmp_; // scratch for downmixing a spatial voice to mono
     u32 maxReal_ = 64;
     VoiceId nextId_ = 1;
     u64 nextAge_ = 1;

@@ -33,6 +33,13 @@ struct Voice {
 
     BusId bus = kInvalidId; // routing target (kInvalidId = Master, resolved by the mixer)
 
+    // --- spatial (3D) ---
+    bool spatial = false;      // rendered by the spatial renderer instead of the flat upmix
+    Float3 position;           // world position (spatial voices)
+    int spatialSlot = -1;      // spatial renderer source slot (>=0 when acquired)
+    f32 minDistance = 1.0f;
+    f32 maxDistance = 100.0f;
+
     // --- voice management ---
     i32 priority = 0;            // higher = more important (kept audible under a voice budget)
     bool virtualized = false;    // true = over budget: cursor advances but no audio is mixed

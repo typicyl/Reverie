@@ -48,6 +48,7 @@ Result Engine::Init(const Config& config) {
     ec.channels = config.channels;
     ec.periodFrames = config.periodFrames;
     ec.maxVoices = config.maxVoices;
+    ec.useResonance = config.useResonance;
     return impl_->engine.Init(ec);
 }
 
@@ -82,6 +83,21 @@ void Engine::ClearDuck(BusId ducked) { impl_->engine.ClearDuck(ducked); }
 f32 Engine::BusMeter(BusId bus) const { return impl_->engine.BusMeter(bus); }
 void Engine::CaptureSnapshot(const char* name) { impl_->engine.CaptureSnapshot(name); }
 bool Engine::ApplySnapshot(const char* name) { return impl_->engine.ApplySnapshot(name); }
+
+void Engine::SetListener(const Float3& position, const Float3& forward, const Float3& up) {
+    impl_->engine.SetListener(position, forward, up);
+}
+VoiceId Engine::PlaySpatial(SoundId sound, const Float3& position, f32 volume, bool loop) {
+    return impl_->engine.PlaySpatial(sound, position, volume, loop);
+}
+void Engine::SetVoicePosition(VoiceId voice, const Float3& position) {
+    impl_->engine.SetVoicePosition(voice, position);
+}
+InstanceId Engine::PlayEventAt(EventId event, const Float3& position, f32 volume) {
+    return impl_->engine.PlayEventAt(event, position, volume);
+}
+BusId Engine::SpatialBus() const { return impl_->engine.SpatialBus(); }
+const char* Engine::SpatialBackendName() const { return impl_->engine.SpatialBackendName(); }
 
 SoundId Engine::LoadSoundFile(const char* path) { return impl_->engine.LoadFile(path); }
 SoundId Engine::LoadSoundPCM(const f32* interleaved, u32 frameCount, u32 channels, u32 sampleRate) {

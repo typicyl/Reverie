@@ -16,11 +16,14 @@
 #include "Events/EventSystem.h"
 #include "Mixer/Mixer.h"
 #include "Platform/AudioDevice.h"
+#include "Spatial/PanningSpatialRenderer.h"
+#include "Spatial/SpatialRenderer.h"
 #include "Voices/VoiceManager.h"
 
 #include <memory>
 #include <mutex>
 #include <unordered_map>
+#include <vector>
 
 namespace reverie {
 
@@ -29,7 +32,9 @@ struct EngineConfig {
     u32 sampleRate = 48000;
     u32 channels = 2; // output channels (Phase 1/2: stereo)
     u32 periodFrames = 0;
-    u32 maxVoices = 64; // real-voice budget (the rest virtualize)
+    u32 maxVoices = 64;      // real-voice budget (the rest virtualize)
+    bool useResonance = false; // spatial backend: false = panning, true = HDS Resonance HRTF
+                               // (only if built with REVERIE_WITH_RESONANCE; else falls back)
 };
 
 class AudioEngine final : public IAudioRenderer {
@@ -87,6 +92,23 @@ public:
     void StopInstance(InstanceId instance) { events_.StopInstance(instance); }
     u32 ActiveInstanceCount(EventId event) const { return events_.ActiveInstanceCount(event); }
 
+    // -- Spatial (3D) ---------------------------------------------------------------------
+    void SetListener(const Float3& position, const Float3& forward, const Float3& up);
+    VoiceId PlaySpatial(SoundId sound, const Float3& position, f32 volume, bool loop);
+    void SetVoicePosition(VoiceId voice, const Float3& position) {
+        voices_.SetVoicePosition(voice, position);
+    }
+    InstanceId PlayEventAt(EventId event, const Float3& position, f32 volume) {
+        return events_.PlayEvent(event, volume, true, position);
+    }
+    void SetEnvironment(const AcousticEnvironment& env) {
+        if (spatialRenderer_) spatialRenderer_->SetEnvironment(env);
+    }
+    const char* SpatialBackendName() const {
+        return spatialRenderer_ ? spatialRenderer_->Name() : "none";
+    }
+    BusId SpatialBus() const { return spatialBus_; }
+
     // -- Stats ----------------------------------------------------------------------------
     u32 ActiveVoiceCount() const { return voices_.ActiveVoiceCount(); }
     u32 RealVoiceCount() const { return voices_.RealVoiceCount(); }
@@ -110,6 +132,12 @@ private:
     std::unordered_map<SoundId, std::shared_ptr<const AudioBuffer>> sounds_;
     SoundId nextSound_ = 1;
     EventSystem events_; // constructed with voices_ + a GetSound resolver (see ctor)
+    std::unique_ptr<ISpatialRenderer> spatialRenderer_;
+    BusId spatialBus_ = kInvalidId;
+    Float3 listenerPos_;
+    Float3 listenerFwd_{0.0f, 0.0f, -1.0f};
+    Float3 listenerUp_{0.0f, 1.0f, 0.0f};
+    std::vector<f32> spatialTmp_; // stereo scratch for the spatial mix
     AudioFormat format_;
     bool inited_ = false;
 };

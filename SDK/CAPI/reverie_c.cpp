@@ -25,6 +25,8 @@ reverie_config reverie_default_config(void) {
     c.sample_rate = 48000;
     c.channels = 2;
     c.period_frames = 0;
+    c.max_voices = 64;
+    c.use_resonance = 0;
     return c;
 }
 
@@ -42,6 +44,8 @@ reverie_result reverie_init(reverie_engine* engine, const reverie_config* config
     cfg.sampleRate = config->sample_rate;
     cfg.channels = config->channels;
     cfg.periodFrames = config->period_frames;
+    cfg.maxVoices = config->max_voices != 0 ? config->max_voices : 64;
+    cfg.useResonance = config->use_resonance != 0;
     return MapResult(Cast(engine)->Init(cfg));
 }
 
@@ -246,6 +250,40 @@ void reverie_capture_snapshot(reverie_engine* engine, const char* name) {
 
 int reverie_apply_snapshot(reverie_engine* engine, const char* name) {
     return (engine != nullptr && Cast(engine)->ApplySnapshot(name)) ? 1 : 0;
+}
+
+void reverie_set_listener(reverie_engine* engine, float px, float py, float pz, float fx, float fy,
+                          float fz, float ux, float uy, float uz) {
+    if (engine != nullptr)
+        Cast(engine)->SetListener(reverie::Float3{px, py, pz}, reverie::Float3{fx, fy, fz},
+                                  reverie::Float3{ux, uy, uz});
+}
+
+reverie_voice reverie_play_spatial(reverie_engine* engine, reverie_sound sound, float px, float py,
+                                   float pz, float volume, int loop) {
+    return engine != nullptr
+               ? Cast(engine)->PlaySpatial(sound, reverie::Float3{px, py, pz}, volume, loop != 0)
+               : 0u;
+}
+
+void reverie_set_voice_position(reverie_engine* engine, reverie_voice voice, float px, float py,
+                                float pz) {
+    if (engine != nullptr) Cast(engine)->SetVoicePosition(voice, reverie::Float3{px, py, pz});
+}
+
+reverie_event_instance reverie_play_event_at(reverie_engine* engine, reverie_event event, float px,
+                                             float py, float pz, float volume) {
+    return engine != nullptr
+               ? Cast(engine)->PlayEventAt(event, reverie::Float3{px, py, pz}, volume)
+               : 0u;
+}
+
+reverie_bus reverie_spatial_bus(reverie_engine* engine) {
+    return engine != nullptr ? Cast(engine)->SpatialBus() : 0u;
+}
+
+const char* reverie_spatial_backend_name(reverie_engine* engine) {
+    return engine != nullptr ? Cast(engine)->SpatialBackendName() : "none";
 }
 
 } // extern "C"

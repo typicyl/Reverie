@@ -62,7 +62,8 @@ void EventSystem::PruneDeadInstances() {
         instances_.end());
 }
 
-InstanceId EventSystem::PlayEvent(EventId event, f32 volume) {
+InstanceId EventSystem::PlayEvent(EventId event, f32 volume, bool spatial,
+                                  const Float3& position) {
     const AudioEventDef* def = Find(event);
     if (def == nullptr) return 0;
 
@@ -107,6 +108,8 @@ InstanceId EventSystem::PlayEvent(EventId event, f32 volume) {
         spawn.eventInstance = instance;
         spawn.concurrencyGroup = def->concurrencyGroup;
         spawn.bus = layer.bus;
+        spawn.spatial = spatial;
+        spawn.position = position;
         if (voices_.Play(spawn) != kInvalidId) anySpawned = true;
     }
 

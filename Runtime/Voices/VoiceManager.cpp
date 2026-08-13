@@ -37,6 +37,17 @@ VoiceId VoiceManager::Play(const VoiceSpawn& spawn) {
     v.eventInstance = spawn.eventInstance;
     v.concurrencyGroup = spawn.concurrencyGroup;
     v.bus = spawn.bus;
+    if (spawn.spatial && spatial_ != nullptr) {
+        const int slot = spatial_->AcquireSource(spawn.quality);
+        if (slot >= 0) {
+            v.spatial = true;
+            v.spatialSlot = slot;
+            v.position = spawn.position;
+            v.minDistance = spawn.minDistance;
+            v.maxDistance = spawn.maxDistance;
+        }
+        // slot < 0 (pool full) -> the voice falls back to a normal 2D voice on its bus.
+    }
     v.age = nextAge_++;
     voices_.push_back(std::move(v));
     const VoiceId id = voices_.back().id;
@@ -53,33 +64,59 @@ void VoiceManager::Stop(VoiceId id) {
             break;
         }
     }
-    voices_.erase(std::remove_if(voices_.begin(), voices_.end(),
-                                 [](const Voice& v) { return v.state == VoiceState::Free; }),
-                  voices_.end());
+    ReapLocked();
     ReprioritizeLocked();
 }
 
 void VoiceManager::StopInstance(InstanceId instance) {
     if (instance == 0) return;
     std::lock_guard<std::mutex> lock(mutex_);
-    voices_.erase(std::remove_if(voices_.begin(), voices_.end(),
-                                 [instance](const Voice& v) { return v.eventInstance == instance; }),
-                  voices_.end());
+    for (Voice& v : voices_)
+        if (v.eventInstance == instance) v.state = VoiceState::Free;
+    ReapLocked();
     ReprioritizeLocked();
 }
 
 void VoiceManager::StopGroup(u32 group) {
     if (group == 0) return;
     std::lock_guard<std::mutex> lock(mutex_);
-    voices_.erase(std::remove_if(voices_.begin(), voices_.end(),
-                                 [group](const Voice& v) { return v.concurrencyGroup == group; }),
-                  voices_.end());
+    for (Voice& v : voices_)
+        if (v.concurrencyGroup == group) v.state = VoiceState::Free;
+    ReapLocked();
     ReprioritizeLocked();
 }
 
 void VoiceManager::StopAll() {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (spatial_ != nullptr)
+        for (Voice& v : voices_)
+            if (v.spatialSlot >= 0) spatial_->ReleaseSource(v.spatialSlot);
     voices_.clear();
+}
+
+void VoiceManager::SetVoicePosition(VoiceId id, const Float3& position) {
+    if (id == kInvalidId) return;
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (Voice& v : voices_) {
+        if (v.id == id && v.spatial) {
+            v.position = position;
+            break;
+        }
+    }
+}
+
+void VoiceManager::ReapLocked() {
+    if (spatial_ != nullptr) {
+        for (Voice& v : voices_) {
+            if (v.state == VoiceState::Free && v.spatialSlot >= 0) {
+                spatial_->ReleaseSource(v.spatialSlot);
+                v.spatialSlot = -1;
+            }
+        }
+    }
+    voices_.erase(std::remove_if(voices_.begin(), voices_.end(),
+                                 [](const Voice& v) { return v.state == VoiceState::Free; }),
+                  voices_.end());
 }
 
 u32 VoiceManager::ActiveVoiceCount() const {
@@ -150,9 +187,25 @@ void VoiceManager::MixToBuses(Mixer& mixer, u32 frameCount, u32 channels, u32 ds
             v.state = VoiceState::Free;
             continue;
         }
-        // Real voices mix into their target bus's block buffer; virtual voices still advance.
-        f32* out = v.virtualized ? nullptr : mixer.BusBuffer(v.bus);
-        const bool audible = out != nullptr;
+        // Spatial real voices submit a mono block to the spatial renderer; non-spatial real
+        // voices mix into their target bus buffer; virtual voices advance silently either way.
+        const bool spatialVoice = v.spatial && v.spatialSlot >= 0 && spatial_ != nullptr;
+        f32* out = nullptr;
+        f32* mono = nullptr;
+        if (!v.virtualized) {
+            if (spatialVoice) {
+                if (monoTmp_.size() < frameCount)
+                    monoTmp_.assign(frameCount, 0.0f);
+                else
+                    std::fill(monoTmp_.begin(), monoTmp_.begin() + frameCount, 0.0f);
+                mono = monoTmp_.data();
+                spatial_->SetSource(v.spatialSlot, v.position, v.volume, v.minDistance,
+                                    v.maxDistance);
+            } else {
+                out = mixer.BusBuffer(v.bus);
+            }
+        }
+        const bool audible = out != nullptr || mono != nullptr;
         const f64 step =
             (static_cast<f64>(b.sampleRate) / static_cast<f64>(dstSampleRate)) * v.pitch;
 
@@ -170,31 +223,45 @@ void VoiceManager::MixToBuses(Mixer& mixer, u32 frameCount, u32 channels, u32 ds
                 const u32 i0 = static_cast<u32>(v.cursor);
                 const u32 i1 = (i0 + 1 < srcFrames) ? i0 + 1 : (v.loop ? 0u : i0);
                 const f32 frac = static_cast<f32>(v.cursor - static_cast<f64>(i0));
-                f32 sl, sr;
-                if (srcCh == 1) {
-                    const f32 s0 = b.samples[i0];
-                    const f32 s1 = b.samples[i1];
-                    const f32 s = (s0 + (s1 - s0) * frac) * v.volume;
-                    sl = s;
-                    sr = s;
+                if (mono != nullptr) {
+                    // Downmix to mono WITHOUT volume - the spatial renderer applies volume,
+                    // distance and panning from the source's params.
+                    f32 m;
+                    if (srcCh == 1) {
+                        m = b.samples[i0] + (b.samples[i1] - b.samples[i0]) * frac;
+                    } else {
+                        const f32 l0 = b.samples[static_cast<usize>(i0) * srcCh + 0];
+                        const f32 l1 = b.samples[static_cast<usize>(i1) * srcCh + 0];
+                        const f32 r0 = b.samples[static_cast<usize>(i0) * srcCh + 1];
+                        const f32 r1 = b.samples[static_cast<usize>(i1) * srcCh + 1];
+                        m = 0.5f * ((l0 + (l1 - l0) * frac) + (r0 + (r1 - r0) * frac));
+                    }
+                    mono[f] += m;
                 } else {
-                    const f32 l0 = b.samples[static_cast<usize>(i0) * srcCh + 0];
-                    const f32 l1 = b.samples[static_cast<usize>(i1) * srcCh + 0];
-                    const f32 r0 = b.samples[static_cast<usize>(i0) * srcCh + 1];
-                    const f32 r1 = b.samples[static_cast<usize>(i1) * srcCh + 1];
-                    sl = (l0 + (l1 - l0) * frac) * v.volume;
-                    sr = (r0 + (r1 - r0) * frac) * v.volume;
+                    f32 sl, sr;
+                    if (srcCh == 1) {
+                        const f32 s =
+                            (b.samples[i0] + (b.samples[i1] - b.samples[i0]) * frac) * v.volume;
+                        sl = s;
+                        sr = s;
+                    } else {
+                        const f32 l0 = b.samples[static_cast<usize>(i0) * srcCh + 0];
+                        const f32 l1 = b.samples[static_cast<usize>(i1) * srcCh + 0];
+                        const f32 r0 = b.samples[static_cast<usize>(i0) * srcCh + 1];
+                        const f32 r1 = b.samples[static_cast<usize>(i1) * srcCh + 1];
+                        sl = (l0 + (l1 - l0) * frac) * v.volume;
+                        sr = (r0 + (r1 - r0) * frac) * v.volume;
+                    }
+                    out[static_cast<usize>(f) * channels + 0] += sl;
+                    if (channels >= 2) out[static_cast<usize>(f) * channels + 1] += sr;
                 }
-                out[static_cast<usize>(f) * channels + 0] += sl;
-                if (channels >= 2) out[static_cast<usize>(f) * channels + 1] += sr;
             }
             v.cursor += step;
         }
+        if (mono != nullptr) spatial_->SubmitSourceAudio(v.spatialSlot, mono, frameCount);
     }
 
-    voices_.erase(std::remove_if(voices_.begin(), voices_.end(),
-                                 [](const Voice& v) { return v.state == VoiceState::Free; }),
-                  voices_.end());
+    ReapLocked();
     ReprioritizeLocked();
 }
 
