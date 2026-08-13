@@ -33,6 +33,7 @@ typedef unsigned int reverie_sound;
 typedef unsigned int reverie_voice;
 typedef unsigned int reverie_event;
 typedef unsigned int reverie_event_instance;
+typedef unsigned int reverie_bus;
 typedef struct reverie_event_builder reverie_event_builder;
 
 typedef enum reverie_backend {
@@ -123,6 +124,30 @@ REVERIE_API reverie_event_instance reverie_play_event(reverie_engine* engine, re
 REVERIE_API void reverie_stop_event_instance(reverie_engine* engine,
                                              reverie_event_instance instance);
 REVERIE_API unsigned int reverie_active_instance_count(reverie_engine* engine, reverie_event event);
+
+/* Routes an event layer to a bus (call after add_layer, before register). */
+REVERIE_API void reverie_event_builder_set_layer_bus(reverie_event_builder* builder, int layer,
+                                                     reverie_bus bus);
+
+/* -- Mixer / bus tree ------------------------------------------------------------------- *
+ * After reverie_init the default tree exists: Master + Music/SFX/Dialogue/Ambience/UI. */
+REVERIE_API reverie_bus reverie_master_bus(reverie_engine* engine);
+REVERIE_API reverie_bus reverie_create_bus(reverie_engine* engine, const char* name,
+                                           reverie_bus parent);
+REVERIE_API reverie_bus reverie_find_bus(reverie_engine* engine, const char* name);
+REVERIE_API void reverie_set_bus_volume(reverie_engine* engine, reverie_bus bus, float volume);
+REVERIE_API float reverie_get_bus_volume(reverie_engine* engine, reverie_bus bus);
+REVERIE_API void reverie_set_bus_muted(reverie_engine* engine, reverie_bus bus, int muted);
+REVERIE_API void reverie_set_bus_soloed(reverie_engine* engine, reverie_bus bus, int soloed);
+REVERIE_API void reverie_add_send(reverie_engine* engine, reverie_bus from, reverie_bus to,
+                                  float level);
+REVERIE_API void reverie_set_duck(reverie_engine* engine, reverie_bus ducked,
+                                  reverie_bus sidechain, float threshold, float amount,
+                                  float attack_ms, float release_ms);
+REVERIE_API void reverie_clear_duck(reverie_engine* engine, reverie_bus ducked);
+REVERIE_API float reverie_bus_meter(reverie_engine* engine, reverie_bus bus);
+REVERIE_API void reverie_capture_snapshot(reverie_engine* engine, const char* name);
+REVERIE_API int reverie_apply_snapshot(reverie_engine* engine, const char* name);
 
 #ifdef __cplusplus
 } /* extern "C" */

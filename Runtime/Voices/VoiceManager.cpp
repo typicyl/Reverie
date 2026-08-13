@@ -3,6 +3,8 @@
 // Copyright (c) Hollow Dream Studios. All rights reserved.
 #include "Voices/VoiceManager.h"
 
+#include "Mixer/Mixer.h"
+
 #include <algorithm>
 #include <cstring>
 
@@ -34,6 +36,7 @@ VoiceId VoiceManager::Play(const VoiceSpawn& spawn) {
     v.priority = spawn.priority;
     v.eventInstance = spawn.eventInstance;
     v.concurrencyGroup = spawn.concurrencyGroup;
+    v.bus = spawn.bus;
     v.age = nextAge_++;
     voices_.push_back(std::move(v));
     const VoiceId id = voices_.back().id;
@@ -134,8 +137,8 @@ void VoiceManager::ReprioritizeLocked() {
         voices_[order[rank]].virtualized = (rank >= maxReal_);
 }
 
-void VoiceManager::Mix(f32* out, u32 frameCount, u32 channels, u32 dstSampleRate) {
-    if (out == nullptr || frameCount == 0 || channels == 0 || dstSampleRate == 0) return;
+void VoiceManager::MixToBuses(Mixer& mixer, u32 frameCount, u32 channels, u32 dstSampleRate) {
+    if (frameCount == 0 || channels == 0 || dstSampleRate == 0) return;
     std::lock_guard<std::mutex> lock(mutex_);
 
     for (Voice& v : voices_) {
@@ -147,9 +150,11 @@ void VoiceManager::Mix(f32* out, u32 frameCount, u32 channels, u32 dstSampleRate
             v.state = VoiceState::Free;
             continue;
         }
+        // Real voices mix into their target bus's block buffer; virtual voices still advance.
+        f32* out = v.virtualized ? nullptr : mixer.BusBuffer(v.bus);
+        const bool audible = out != nullptr;
         const f64 step =
             (static_cast<f64>(b.sampleRate) / static_cast<f64>(dstSampleRate)) * v.pitch;
-        const bool audible = !v.virtualized;
 
         for (u32 f = 0; f < frameCount; ++f) {
             if (v.cursor >= static_cast<f64>(srcFrames)) {

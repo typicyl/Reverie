@@ -27,6 +27,7 @@ AudioEventDef ToRuntime(const EventDesc& desc) {
         layer.pitchVariance = l.pitchVariance;
         layer.loop = l.loop;
         layer.probability = l.probability;
+        layer.bus = l.bus;
         layer.pool.reserve(l.pool.size());
         for (const EventPoolEntry& p : l.pool)
             layer.pool.push_back(EventSound{p.sound, p.weight});
@@ -60,6 +61,27 @@ u32 Engine::OutputChannels() const { return impl_->engine.OutputFormat().channel
 u32 Engine::OutputSampleRate() const { return impl_->engine.OutputFormat().sampleRate; }
 void Engine::SetMaxVoices(u32 count) { impl_->engine.SetMaxVoices(count); }
 void Engine::SetSeed(u64 seed) { impl_->engine.SetSeed(seed); }
+
+BusId Engine::MasterBus() const { return impl_->engine.MasterBus(); }
+BusId Engine::CreateBus(const char* name, BusId parent) {
+    return impl_->engine.CreateBus(name, parent);
+}
+BusId Engine::FindBus(const char* name) const { return impl_->engine.FindBus(name); }
+void Engine::SetBusVolume(BusId bus, f32 volume) { impl_->engine.SetBusVolume(bus, volume); }
+f32 Engine::BusVolume(BusId bus) const { return impl_->engine.BusVolume(bus); }
+void Engine::SetBusMuted(BusId bus, bool muted) { impl_->engine.SetBusMuted(bus, muted); }
+bool Engine::BusMuted(BusId bus) const { return impl_->engine.BusMuted(bus); }
+void Engine::SetBusSoloed(BusId bus, bool soloed) { impl_->engine.SetBusSoloed(bus, soloed); }
+bool Engine::BusSoloed(BusId bus) const { return impl_->engine.BusSoloed(bus); }
+void Engine::AddSend(BusId from, BusId to, f32 level) { impl_->engine.AddSend(from, to, level); }
+void Engine::SetDuck(BusId ducked, BusId sidechain, f32 threshold, f32 amount, f32 attackMs,
+                     f32 releaseMs) {
+    impl_->engine.SetDuck(ducked, sidechain, threshold, amount, attackMs, releaseMs);
+}
+void Engine::ClearDuck(BusId ducked) { impl_->engine.ClearDuck(ducked); }
+f32 Engine::BusMeter(BusId bus) const { return impl_->engine.BusMeter(bus); }
+void Engine::CaptureSnapshot(const char* name) { impl_->engine.CaptureSnapshot(name); }
+bool Engine::ApplySnapshot(const char* name) { return impl_->engine.ApplySnapshot(name); }
 
 SoundId Engine::LoadSoundFile(const char* path) { return impl_->engine.LoadFile(path); }
 SoundId Engine::LoadSoundPCM(const f32* interleaved, u32 frameCount, u32 channels, u32 sampleRate) {

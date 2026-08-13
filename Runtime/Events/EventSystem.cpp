@@ -106,6 +106,7 @@ InstanceId EventSystem::PlayEvent(EventId event, f32 volume) {
         spawn.priority = def->priority;
         spawn.eventInstance = instance;
         spawn.concurrencyGroup = def->concurrencyGroup;
+        spawn.bus = layer.bus;
         if (voices_.Play(spawn) != kInvalidId) anySpawned = true;
     }
 

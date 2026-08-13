@@ -31,6 +31,7 @@ Result AudioEngine::Init(const EngineConfig& config) {
     }
     format_ = device_->Format(); // device is authoritative
     voices_.SetMaxRealVoices(config.maxVoices);
+    mixer_.ConfigureDefault(); // Master + Music/SFX/Dialogue/Ambience/UI
     inited_ = true;
     LogFormat(LogLevel::Info, "AudioEngine ready: %s, %u ch, %u Hz, %u voice budget",
               device_->Name(), format_.channels, format_.sampleRate, config.maxVoices);
@@ -115,13 +116,10 @@ void AudioEngine::StopAll() {
 
 void AudioEngine::RenderAudio(f32* output, u32 frameCount, u32 channels, u32 /*sampleRate*/) {
     if (output == nullptr || frameCount == 0 || channels == 0) return;
-    std::memset(output, 0, static_cast<usize>(frameCount) * channels * sizeof(f32));
-    voices_.Mix(output, frameCount, channels, format_.sampleRate);
-    const f32 g = mixer_.MasterGain();
-    if (g != 1.0f) {
-        const usize n = static_cast<usize>(frameCount) * channels;
-        for (usize i = 0; i < n; ++i) output[i] *= g;
-    }
+    // voices -> per-bus buffers -> bus tree (gain/solo/mute/duck/sends) -> Master -> output.
+    mixer_.BeginBlock(frameCount, channels);
+    voices_.MixToBuses(mixer_, frameCount, channels, format_.sampleRate);
+    mixer_.EndBlock(output, frameCount, channels, format_.sampleRate);
 }
 
 u32 AudioEngine::RenderOffline(f32* out, u32 frameCount) {

@@ -47,7 +47,8 @@ struct EventLayerDesc {
     f32 pitch = 1.0f;
     f32 pitchVariance = 0.0f;
     bool loop = false;
-    f32 probability = 1.0f; // 0..1 chance the layer triggers
+    f32 probability = 1.0f;   // 0..1 chance the layer triggers
+    BusId bus = kInvalidId;   // routing target bus (kInvalidId = Master)
 };
 
 struct EventDesc {
@@ -79,6 +80,27 @@ public:
     // Real-voice budget (the rest virtualize) and the RNG seed for weighted pools / variance.
     void SetMaxVoices(u32 count);
     void SetSeed(u64 seed);
+
+    // -- Mixer / bus tree -----------------------------------------------------------------
+    // After Init the default tree exists: Master + Music, SFX, Dialogue, Ambience, UI.
+    BusId MasterBus() const;
+    BusId CreateBus(const char* name, BusId parent); // parent kInvalidId = Master
+    BusId FindBus(const char* name) const;
+    void SetBusVolume(BusId bus, f32 volume);
+    f32 BusVolume(BusId bus) const;
+    void SetBusMuted(BusId bus, bool muted);
+    bool BusMuted(BusId bus) const;
+    void SetBusSoloed(BusId bus, bool soloed);
+    bool BusSoloed(BusId bus) const;
+    // Routes a copy of `from`'s gained signal into `to` at `level` (e.g. a reverb send).
+    void AddSend(BusId from, BusId to, f32 level);
+    // Ducks `ducked` while `sidechain` exceeds `threshold`, by `amount` (0..1), attack/release ms.
+    void SetDuck(BusId ducked, BusId sidechain, f32 threshold, f32 amount, f32 attackMs,
+                 f32 releaseMs);
+    void ClearDuck(BusId ducked);
+    f32 BusMeter(BusId bus) const; // last block's peak level
+    void CaptureSnapshot(const char* name);
+    bool ApplySnapshot(const char* name);
 
     // -- Sounds ---------------------------------------------------------------------------
     SoundId LoadSoundFile(const char* path);

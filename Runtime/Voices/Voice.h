@@ -31,6 +31,8 @@ struct Voice {
     VoiceState state = VoiceState::Free;
     VoiceId id = kInvalidId;
 
+    BusId bus = kInvalidId; // routing target (kInvalidId = Master, resolved by the mixer)
+
     // --- voice management ---
     i32 priority = 0;            // higher = more important (kept audible under a voice budget)
     bool virtualized = false;    // true = over budget: cursor advances but no audio is mixed

@@ -29,6 +29,7 @@ set(REVERIE_SOURCES
     Runtime/Audio/AudioDecoder.cpp
     Runtime/Audio/AudioEngine.cpp
     Runtime/Voices/VoiceManager.cpp
+    Runtime/Mixer/Mixer.cpp
     Runtime/Events/EventSystem.cpp
     Runtime/Platform/AudioDeviceManager.cpp
     Runtime/Platform/NullDevice.cpp
@@ -80,3 +81,7 @@ add_test(NAME reverie_core COMMAND ReverieTests)
 add_executable(ReverieEventTests Tests/EventTests.cpp)
 target_link_libraries(ReverieEventTests PRIVATE ReverieRuntime)
 add_test(NAME reverie_events COMMAND ReverieEventTests)
+
+add_executable(ReverieMixerTests Tests/MixerTests.cpp)
+target_link_libraries(ReverieMixerTests PRIVATE ReverieRuntime)
+add_test(NAME reverie_mixer COMMAND ReverieMixerTests)

@@ -45,10 +45,29 @@ public:
     Result Start();
     Result Stop();
 
-    void SetMasterVolume(f32 v) { mixer_.SetMasterVolume(v); }
-    f32 MasterVolume() const { return mixer_.MasterVolume(); }
+    void SetMasterVolume(f32 v) { mixer_.SetBusVolume(mixer_.MasterBus(), v); }
+    f32 MasterVolume() const { return mixer_.BusVolume(mixer_.MasterBus()); }
     void SetMaxVoices(u32 n) { voices_.SetMaxRealVoices(n); }
     void SetSeed(u64 seed) { events_.SetSeed(seed); }
+
+    // -- Mixer / bus tree -----------------------------------------------------------------
+    BusId MasterBus() const { return mixer_.MasterBus(); }
+    BusId CreateBus(const char* name, BusId parent) { return mixer_.CreateBus(name, parent); }
+    BusId FindBus(const char* name) const { return mixer_.FindBus(name); }
+    void SetBusVolume(BusId bus, f32 v) { mixer_.SetBusVolume(bus, v); }
+    f32 BusVolume(BusId bus) const { return mixer_.BusVolume(bus); }
+    void SetBusMuted(BusId bus, bool m) { mixer_.SetBusMuted(bus, m); }
+    bool BusMuted(BusId bus) const { return mixer_.BusMuted(bus); }
+    void SetBusSoloed(BusId bus, bool s) { mixer_.SetBusSoloed(bus, s); }
+    bool BusSoloed(BusId bus) const { return mixer_.BusSoloed(bus); }
+    void AddSend(BusId from, BusId to, f32 level) { mixer_.AddSend(from, to, level); }
+    void SetDuck(BusId ducked, BusId sc, f32 thr, f32 amt, f32 atk, f32 rel) {
+        mixer_.SetDuck(ducked, sc, thr, amt, atk, rel);
+    }
+    void ClearDuck(BusId ducked) { mixer_.ClearDuck(ducked); }
+    f32 BusMeter(BusId bus) const { return mixer_.Meter(bus); }
+    void CaptureSnapshot(const char* name) { mixer_.CaptureSnapshot(name); }
+    bool ApplySnapshot(const char* name) { return mixer_.ApplySnapshot(name); }
 
     // -- Sounds ---------------------------------------------------------------------------
     SoundId LoadPCM(const f32* interleaved, u32 frameCount, u32 channels, u32 sampleRate);

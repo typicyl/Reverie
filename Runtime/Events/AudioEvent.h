@@ -33,6 +33,7 @@ struct EventLayer {
     f32 pitchVariance = 0.0f;  // +/- pitch applied randomly per trigger
     bool loop = false;
     f32 probability = 1.0f;    // 0..1 chance this layer triggers at all
+    BusId bus = kInvalidId;    // routing target (kInvalidId = Master)
 };
 
 struct AudioEventDef {

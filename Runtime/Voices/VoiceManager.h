@@ -24,6 +24,8 @@
 
 namespace reverie {
 
+class Mixer; // voices mix into their target bus's buffer (Mixer::BusBuffer)
+
 struct VoiceSpawn {
     std::shared_ptr<const AudioBuffer> buffer;
     f32 volume = 1.0f;
@@ -32,6 +34,7 @@ struct VoiceSpawn {
     i32 priority = 0;
     InstanceId eventInstance = 0;
     u32 concurrencyGroup = 0;
+    BusId bus = kInvalidId; // routing target (kInvalidId = Master)
 };
 
 class VoiceManager {
@@ -51,10 +54,11 @@ public:
     u32 GroupVoiceCount(u32 group) const;
     u32 InstanceVoiceCount(InstanceId instance) const;
 
-    // Mixes all real voices into `out` (interleaved f32, `channels`) at the device rate,
+    // Mixes each real voice into its TARGET BUS's block buffer (via Mixer::BusBuffer),
     // advancing every voice (virtual ones silently), reaping finished voices, and
-    // re-evaluating the real/virtual split afterwards.
-    void Mix(f32* out, u32 frameCount, u32 channels, u32 dstSampleRate);
+    // re-evaluating the real/virtual split afterwards. The mixer must be inside a
+    // BeginBlock/EndBlock pair sized to `frameCount`/`channels`.
+    void MixToBuses(Mixer& mixer, u32 frameCount, u32 channels, u32 dstSampleRate);
 
 private:
     void ReprioritizeLocked();
