@@ -28,8 +28,16 @@ set(REVERIE_SOURCES
     Runtime/Audio/AudioFormat.cpp
     Runtime/Audio/AudioDecoder.cpp
     Runtime/Audio/AudioEngine.cpp
+    Runtime/Audio/StreamManager.cpp
     Runtime/Voices/VoiceManager.cpp
     Runtime/Mixer/Mixer.cpp
+    Runtime/Parameters/ParameterStore.cpp
+    Runtime/DSP/BiquadFilter.cpp
+    Runtime/DSP/DynamicsEffect.cpp
+    Runtime/DSP/DelayEffect.cpp
+    Runtime/Music/MusicSystem.cpp
+    Runtime/Serialization/Bank.cpp
+    Runtime/Serialization/Hdsrf.cpp
     Runtime/Spatial/PanningSpatialRenderer.cpp
     Runtime/Spatial/ResonanceSpatialRenderer.cpp
     Runtime/Events/EventSystem.cpp
@@ -43,13 +51,17 @@ set(REVERIE_SOURCES
 add_library(ReverieRuntime STATIC ${REVERIE_SOURCES})
 target_compile_features(ReverieRuntime PUBLIC cxx_std_17)
 
-# Public: Runtime (Core/Types.h + subsystem headers used by the SDK facade) + the SDK headers.
-# Private: the vendored miniaudio single header - never part of the public surface.
+# Public surface is ONLY the SDK: <Reverie/Reverie.h> (which resolves "Core/Types.h" relative to
+# itself) and the flat C ABI <reverie.h>. Runtime/ is PRIVATE, so a consumer cannot reach internal
+# headers (Mixer/VoiceManager/AudioEngine/...) and shipping the SDK means shipping SDK/ only.
 target_include_directories(ReverieRuntime PUBLIC
-    "${CMAKE_CURRENT_SOURCE_DIR}/Runtime"
     "${CMAKE_CURRENT_SOURCE_DIR}/SDK/Include"
     "${CMAKE_CURRENT_SOURCE_DIR}/SDK/CAPI")
 target_include_directories(ReverieRuntime PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/Runtime"
+    # Internal code says #include "Core/Types.h"; the public vocabulary now lives under the SDK, so
+    # add SDK/Include/Reverie to the PRIVATE search path to resolve it for the runtime TUs.
+    "${CMAKE_CURRENT_SOURCE_DIR}/SDK/Include/Reverie"
     "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/miniaudio")
 
 if(MSVC)
@@ -103,12 +115,95 @@ else()
 endif()
 
 # ---------------------------------------------------------------------------
+# Tools: reverie-cook - offline asset cooker (source audio -> .HDSRF). Uses internal runtime
+# headers (the decoder + codec), so it gets the private include paths.
+# ---------------------------------------------------------------------------
+add_executable(reverie-cook Tools/Cook/main.cpp)
+target_link_libraries(reverie-cook PRIVATE ReverieRuntime)
+target_include_directories(reverie-cook PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/Runtime"
+    "${CMAKE_CURRENT_SOURCE_DIR}/SDK/Include/Reverie")
+
+# ---------------------------------------------------------------------------
+# Reverie Studio - the authoring application core (project model + project->runtime build/preview).
+# A proper SDK consumer (no runtime internals). The Dear ImGui window is a thin view over this and
+# is added when a UI stack is present; the core here is fully headless-testable.
+# ---------------------------------------------------------------------------
+add_library(ReverieStudioLib STATIC Studio/StudioProject.cpp Studio/StudioApp.cpp)
+target_link_libraries(ReverieStudioLib PUBLIC ReverieRuntime)
+target_include_directories(ReverieStudioLib PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/Studio")
+
+add_executable(reverie-studio Studio/main.cpp)
+target_link_libraries(reverie-studio PRIVATE ReverieStudioLib)
+
+# ---------------------------------------------------------------------------
+# Reverie Studio GUI (Dear ImGui editor). Win32 + DX11 is the initial concrete backend, but the
+# editor talks to REPLACEABLE platform/renderer interfaces (Studio/App/StudioBackend.h) - it never
+# includes Win32/DX11 or even ImGui backend headers. Only the backend TU knows the platform. The
+# runtime, SDK, model, cooker and .HDSRF stay completely ImGui-free.
+# ---------------------------------------------------------------------------
+option(REVERIE_BUILD_STUDIO_GUI "Build the Dear ImGui Reverie Studio editor" ${WIN32})
+if(REVERIE_BUILD_STUDIO_GUI AND WIN32)
+    include(FetchContent)
+    FetchContent_Declare(imgui
+        GIT_REPOSITORY https://github.com/ocornut/imgui.git
+        GIT_TAG docking
+        GIT_SHALLOW TRUE)
+    FetchContent_MakeAvailable(imgui) # imgui has no CMakeLists; this just populates imgui_SOURCE_DIR
+
+    # Dear ImGui core + the Win32 platform backend + the DX11 renderer backend, as one static lib.
+    add_library(reverie_imgui STATIC
+        ${imgui_SOURCE_DIR}/imgui.cpp
+        ${imgui_SOURCE_DIR}/imgui_draw.cpp
+        ${imgui_SOURCE_DIR}/imgui_tables.cpp
+        ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+        ${imgui_SOURCE_DIR}/imgui_demo.cpp
+        ${imgui_SOURCE_DIR}/misc/cpp/imgui_stdlib.cpp
+        ${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp
+        ${imgui_SOURCE_DIR}/backends/imgui_impl_dx11.cpp)
+    target_include_directories(reverie_imgui PUBLIC
+        ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends ${imgui_SOURCE_DIR}/misc/cpp)
+    target_compile_definitions(reverie_imgui PUBLIC IMGUI_DEFINE_MATH_OPERATORS)
+    if(MSVC)
+        target_compile_options(reverie_imgui PRIVATE /W0) # third-party
+    endif()
+
+    add_executable(reverie-studio-gui
+        Studio/App/gui_main.cpp
+        Studio/App/EditorApp.cpp
+        Studio/App/Panels.cpp
+        Studio/App/Theme.cpp
+        Studio/App/Win32Dx11Backend.cpp)
+    target_link_libraries(reverie-studio-gui PRIVATE
+        ReverieStudioLib reverie_imgui d3d11 dxgi d3dcompiler)
+    target_include_directories(reverie-studio-gui PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/Studio"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Studio/App")
+    message(STATUS "Reverie: Studio GUI editor ENABLED (Dear ImGui, Win32+DX11 backend).")
+endif()
+
+# ---------------------------------------------------------------------------
 # Tests (headless, deterministic - no audio device required).
 # ---------------------------------------------------------------------------
 enable_testing()
 add_executable(ReverieTests Tests/CoreTests.cpp)
 target_link_libraries(ReverieTests PRIVATE ReverieRuntime)
 add_test(NAME reverie_core COMMAND ReverieTests)
+
+# Lock-free SPSC ring - the substrate of the real-time control<->audio boundary (Phase 1). This
+# test reaches into an internal header (Core/SpscRing.h), so it needs the PRIVATE runtime paths
+# that ReverieRuntime does not export to ordinary consumers.
+add_executable(ReverieRingTests Tests/RingTests.cpp)
+target_link_libraries(ReverieRingTests PRIVATE ReverieRuntime Threads::Threads)
+target_include_directories(ReverieRingTests PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/Runtime"
+    "${CMAKE_CURRENT_SOURCE_DIR}/SDK/Include/Reverie")
+add_test(NAME reverie_ring COMMAND ReverieRingTests)
+
+# Two-thread stress of the lock-free voice pool (control ops vs the render pull). Uses only the SDK.
+add_executable(ReverieConcurrencyTests Tests/ConcurrencyTests.cpp)
+target_link_libraries(ReverieConcurrencyTests PRIVATE ReverieRuntime Threads::Threads)
+add_test(NAME reverie_concurrency COMMAND ReverieConcurrencyTests)
 
 add_executable(ReverieEventTests Tests/EventTests.cpp)
 target_link_libraries(ReverieEventTests PRIVATE ReverieRuntime)
@@ -117,6 +212,39 @@ add_test(NAME reverie_events COMMAND ReverieEventTests)
 add_executable(ReverieMixerTests Tests/MixerTests.cpp)
 target_link_libraries(ReverieMixerTests PRIVATE ReverieRuntime)
 add_test(NAME reverie_mixer COMMAND ReverieMixerTests)
+
+add_executable(ReverieParamTests Tests/ParamTests.cpp)
+target_link_libraries(ReverieParamTests PRIVATE ReverieRuntime)
+add_test(NAME reverie_params COMMAND ReverieParamTests)
+
+add_executable(ReverieDspTests Tests/DspTests.cpp)
+target_link_libraries(ReverieDspTests PRIVATE ReverieRuntime)
+add_test(NAME reverie_dsp COMMAND ReverieDspTests)
+
+add_executable(ReverieBankTests Tests/BankTests.cpp)
+target_link_libraries(ReverieBankTests PRIVATE ReverieRuntime)
+add_test(NAME reverie_bank COMMAND ReverieBankTests)
+
+add_executable(ReverieMusicTests Tests/MusicTests.cpp)
+target_link_libraries(ReverieMusicTests PRIVATE ReverieRuntime)
+add_test(NAME reverie_music COMMAND ReverieMusicTests)
+
+# Exercises the .HDSRF codec at the runtime level, so it needs the internal headers.
+add_executable(ReverieHdsrfTests Tests/HdsrfTests.cpp)
+target_link_libraries(ReverieHdsrfTests PRIVATE ReverieRuntime)
+target_include_directories(ReverieHdsrfTests PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/Runtime"
+    "${CMAKE_CURRENT_SOURCE_DIR}/SDK/Include/Reverie")
+add_test(NAME reverie_hdsrf COMMAND ReverieHdsrfTests)
+
+# The cooker's in-memory cook+verify path (runnable in CI without an input file).
+add_test(NAME reverie_cook_selftest COMMAND reverie-cook --selftest)
+
+# Reverie Studio: authoring-core tests + the app's own self-test.
+add_executable(ReverieStudioTests Tests/StudioTests.cpp)
+target_link_libraries(ReverieStudioTests PRIVATE ReverieStudioLib)
+add_test(NAME reverie_studio COMMAND ReverieStudioTests)
+add_test(NAME reverie_studio_selftest COMMAND reverie-studio --selftest)
 
 add_executable(ReverieSpatialTests Tests/SpatialTests.cpp)
 target_link_libraries(ReverieSpatialTests PRIVATE ReverieRuntime)

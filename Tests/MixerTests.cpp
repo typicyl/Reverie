@@ -84,8 +84,9 @@ int main() {
         render();
         Check(Energy(buf) > 1.0, "voice on SFX is audible");
         engine.SetBusVolume(sfx, 0.0f);
+        render(); // first block ramps the gain to 0 (de-zipper)
         render();
-        Check(Energy(buf) < 1e-6, "SFX volume 0 silences it");
+        Check(Energy(buf) < 1e-6, "SFX volume 0 silences it (after gain ramp)");
         engine.SetBusVolume(sfx, 1.0f);
         engine.StopAll();
     }
@@ -95,8 +96,9 @@ int main() {
         const EventId ev = BusEvent(engine, snd, sfx, 0.5f);
         engine.PlayEvent(ev);
         engine.SetBusMuted(sfx, true);
+        render(); // first block ramps to 0 (de-zipper)
         render();
-        Check(Energy(buf) < 1e-6, "muted bus is silent");
+        Check(Energy(buf) < 1e-6, "muted bus is silent (after gain ramp)");
         engine.SetBusMuted(sfx, false);
         engine.StopAll();
     }
@@ -106,9 +108,11 @@ int main() {
         engine.PlayEvent(BusEvent(engine, snd, music, 0.5f));
         engine.PlayEvent(BusEvent(engine, snd, sfx, 0.5f));
         render();
+        render(); // settle both bus gains after any prior ramp
         const double both = Energy(buf);
         engine.SetBusSoloed(music, true);
         render();
+        render(); // let the solo gain ramp settle
         const double musicOnly = Energy(buf);
         Check(musicOnly > 1.0, "solo: soloed bus still audible");
         Check(musicOnly < both * 0.75, "solo: non-soloed bus silenced");
@@ -169,7 +173,8 @@ int main() {
     // 9) C ABI bus smoke.
     {
         reverie_engine* e = reverie_create();
-        reverie_config cfg = reverie_default_config();
+        reverie_config cfg;
+        reverie_default_config(&cfg);
         cfg.backend = REVERIE_BACKEND_NULL;
         reverie_init(e, &cfg);
         Check(reverie_master_bus(e) != 0, "C ABI: master bus");

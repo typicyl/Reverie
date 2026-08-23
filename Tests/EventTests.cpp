@@ -173,12 +173,41 @@ int main() {
         engine.StopAll();
     }
 
+    // 6b) An event layer's gain is modulated by a parameter (RTPC).
+    {
+        engine.StopAll();
+        const ParameterId intensity = engine.RegisterParameter("EvtIntensity", 0.0f, 0.0f, 1.0f, 0.0f);
+        EventDesc def;
+        EventLayerDesc l;
+        l.pool.push_back({snd, 1.0f});
+        l.loop = true;
+        l.gainParam = intensity;
+        l.paramLo = 0.5f;
+        l.paramHi = 1.0f;
+        def.layers.push_back(l);
+        const EventId ev = engine.RegisterEvent(def);
+        engine.PlayEvent(ev);
+        std::vector<float> buf(kBlock * kCh, 0.0f);
+        auto energyAt = [&](f32 v) {
+            engine.SetParameter(intensity, v);
+            for (int i = 0; i < 4; ++i) engine.RenderOffline(buf.data(), kBlock);
+            std::fill(buf.begin(), buf.end(), 0.0f);
+            engine.RenderOffline(buf.data(), kBlock);
+            return Energy(buf);
+        };
+        const double eLow = energyAt(0.0f);  // below paramLo -> layer muted
+        const double eHigh = energyAt(1.0f); // at paramHi -> full
+        Check(eHigh > 1.0 && eLow < eHigh * 0.25, "event layer gain follows its parameter");
+        engine.StopAll();
+    }
+
     engine.Shutdown();
 
     // 7) C ABI event builder smoke.
     {
         reverie_engine* e = reverie_create();
-        reverie_config cfg = reverie_default_config();
+        reverie_config cfg;
+        reverie_default_config(&cfg);
         cfg.backend = REVERIE_BACKEND_NULL;
         Check(reverie_init(e, &cfg) == REVERIE_OK, "C ABI: init");
         const reverie_sound s = reverie_load_sound_pcm(e, sine.data(), (unsigned)sine.size(), 1, kSr);

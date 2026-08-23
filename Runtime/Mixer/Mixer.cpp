@@ -3,17 +3,31 @@
 // Copyright (c) Hollow Dream Studios. All rights reserved.
 #include "Mixer/Mixer.h"
 
+#include "DSP/BiquadFilter.h"
+#include "DSP/DelayEffect.h"
+#include "DSP/DynamicsEffect.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <memory>
 
 namespace reverie {
 
 Mixer::Mixer() {
+    // Reserve stable storage up front so buses_ never reallocates and the maps never rehash while
+    // the audio thread is reading them (see kMaxBuses rationale in the header).
+    buses_.reserve(kMaxBuses);
+    index_.reserve(kMaxBuses * 2);
+    byName_.reserve(kMaxBuses * 2);
+    effectRegistry_.reserve(kMaxBuses * kMaxEffectsPerBus);
+
     Bus master;
     master.id = nextId_++;
     master.name = "Master";
     master.parent = kInvalidId;
+    master.sends.reserve(kMaxSendsPerBus);
+    master.effects.reserve(kMaxEffectsPerBus);
     master_ = master.id;
     index_[master.id] = buses_.size();
     byName_[master.name] = master.id;
@@ -38,10 +52,13 @@ const Mixer::Bus* Mixer::Get(BusId id) const {
 BusId Mixer::CreateBus(const char* name, BusId parent) {
     if (name == nullptr) return kInvalidId;
     if (BusId existing = FindBus(name); existing != kInvalidId) return existing;
+    if (buses_.size() >= kMaxBuses) return kInvalidId; // never reallocate past the reserved storage
     Bus b;
     b.id = nextId_++;
     b.name = name;
     b.parent = (parent != kInvalidId && Get(parent) != nullptr) ? parent : master_;
+    b.sends.reserve(kMaxSendsPerBus);
+    b.effects.reserve(kMaxEffectsPerBus);
     index_[b.id] = buses_.size();
     byName_[b.name] = b.id;
     buses_.push_back(std::move(b));
@@ -80,6 +97,7 @@ bool Mixer::BusSoloed(BusId bus) const {
 void Mixer::AddSend(BusId from, BusId to, f32 level) {
     Bus* b = Get(from);
     if (b == nullptr || Get(to) == nullptr || from == to) return;
+    if (b->sends.size() >= kMaxSendsPerBus) return; // stay within the reserved (never-realloc) sends
     b->sends.push_back(Send{to, level});
     MarkTopologyDirty();
 }
@@ -102,6 +120,59 @@ void Mixer::ClearDuck(BusId ducked) {
         b->duckGain = 1.0f;
     }
     MarkTopologyDirty();
+}
+
+EffectId Mixer::AddEffect(BusId bus, EffectType type, u32 sampleRate, u32 channels) {
+    Bus* b = Get(bus);
+    if (b == nullptr) return kInvalidId;
+    if (b->effects.size() >= kMaxEffectsPerBus) return kInvalidId; // reserved: no realloc past cap
+    std::unique_ptr<IAudioEffect> fx;
+    switch (type) {
+    case EffectType::Filter: fx = std::make_unique<BiquadFilter>(); break;
+    case EffectType::Compressor: fx = std::make_unique<DynamicsEffect>(); break;
+    case EffectType::Delay: fx = std::make_unique<DelayEffect>(); break;
+    }
+    if (!fx) return kInvalidId;
+    fx->Prepare(sampleRate, channels);
+    IAudioEffect* raw = fx.get(); // stable: the pointee never moves even if the vector reallocs
+    b->effects.push_back(std::move(fx));
+    effectRegistry_.push_back(raw);
+    return static_cast<EffectId>(effectRegistry_.size()); // id = index + 1
+}
+
+void Mixer::SetEffectParam(EffectId effect, u32 index, f32 value) {
+    if (effect == kInvalidId || effect > effectRegistry_.size()) return;
+    effectRegistry_[effect - 1]->SetParam(index, value);
+}
+
+f32 Mixer::EffectParam(EffectId effect, u32 index) const {
+    if (effect == kInvalidId || effect > effectRegistry_.size()) return 0.0f;
+    return effectRegistry_[effect - 1]->GetParam(index);
+}
+
+u32 Mixer::BusEffectCount(BusId bus) const {
+    const Bus* b = Get(bus);
+    return b ? static_cast<u32>(b->effects.size()) : 0u;
+}
+
+bool Mixer::DescribeBusAt(u32 index, BusDescriptor& out) const {
+    if (index >= buses_.size()) return false;
+    const Bus& b = buses_[index];
+    out = BusDescriptor{};
+    out.name = b.name;
+    out.parentName = (b.id != master_ && b.parent != kInvalidId) ? [&] {
+        const Bus* p = Get(b.parent);
+        return p != nullptr ? p->name : std::string();
+    }() : std::string();
+    out.gain = b.gain;
+    out.muted = b.muted;
+    out.soloed = b.soloed;
+    out.sends.reserve(b.sends.size());
+    for (const Send& s : b.sends) {
+        const Bus* d = Get(s.dest);
+        if (d != nullptr) out.sends.emplace_back(d->name, s.level);
+    }
+    return true;
 }
 
 f32 Mixer::Meter(BusId bus) const {
@@ -172,7 +243,10 @@ void Mixer::RebuildTopology() {
     topoDirty_ = false;
 }
 
-void Mixer::ComputeSoloAudibility(std::vector<bool>& audible) const {
+void Mixer::ComputeSoloAudibility() {
+    // Fills the reused audible_ scratch. Its capacity only grows on the control thread (CreateBus),
+    // so on the audio thread assign() never reallocates - no per-block heap allocation.
+    std::vector<bool>& audible = audible_;
     const usize n = buses_.size();
     audible.assign(n, true);
     bool anySolo = false;
@@ -224,8 +298,8 @@ void Mixer::EndBlock(f32* output, u32 frameCount, u32 channels, u32 sampleRate) 
     if (output == nullptr || frameCount == 0 || channels == 0) return;
     if (topoDirty_) RebuildTopology();
 
-    std::vector<bool> audible;
-    ComputeSoloAudibility(audible);
+    ComputeSoloAudibility();
+    const std::vector<bool>& audible = audible_;
     const bool anySolo = std::find(audible.begin(), audible.end(), false) != audible.end();
     const f32 blockDt = static_cast<f32>(frameCount) / static_cast<f32>(sampleRate);
     const usize count = static_cast<usize>(frameCount) * channels;
@@ -249,19 +323,41 @@ void Mixer::EndBlock(f32* output, u32 frameCount, u32 channels, u32 sampleRate) 
             g *= b.duckGain;
         }
 
+        // Pre-fader insert effects: process the summed bus signal in chain order, in place.
+        for (const std::unique_ptr<IAudioEffect>& fx : b.effects)
+            if (fx) fx->Process(b.buffer.data(), frameCount, channels);
+
         f32 peak = 0.0f;
-        if (g != 1.0f) {
-            for (usize i = 0; i < count; ++i) {
-                b.buffer[i] *= g;
-                const f32 a = std::fabs(b.buffer[i]);
-                if (a > peak) peak = a;
+        const f32 g0 = b.smoothedGain;
+        if (g0 == g) {
+            // Steady gain: constant multiply (and skip entirely at unity).
+            if (g != 1.0f) {
+                for (usize i = 0; i < count; ++i) {
+                    b.buffer[i] *= g;
+                    const f32 a = std::fabs(b.buffer[i]);
+                    if (a > peak) peak = a;
+                }
+            } else {
+                for (usize i = 0; i < count; ++i) {
+                    const f32 a = std::fabs(b.buffer[i]);
+                    if (a > peak) peak = a;
+                }
             }
         } else {
-            for (usize i = 0; i < count; ++i) {
-                const f32 a = std::fabs(b.buffer[i]);
-                if (a > peak) peak = a;
+            // Ramp per FRAME from the previous gain to the target, eliminating zipper noise on
+            // volume/mute/duck/solo changes (all folded into g).
+            const f32 dg = (g - g0) / static_cast<f32>(frameCount);
+            for (u32 f = 0; f < frameCount; ++f) {
+                const f32 gc = g0 + dg * static_cast<f32>(f + 1);
+                for (u32 c = 0; c < channels; ++c) {
+                    const usize i = static_cast<usize>(f) * channels + c;
+                    b.buffer[i] *= gc;
+                    const f32 a = std::fabs(b.buffer[i]);
+                    if (a > peak) peak = a;
+                }
             }
         }
+        b.smoothedGain = g;
         b.meterPeak = peak;
 
         if (b.id == master_) {

@@ -110,6 +110,9 @@ InstanceId EventSystem::PlayEvent(EventId event, f32 volume, bool spatial,
         spawn.bus = layer.bus;
         spawn.spatial = spatial;
         spawn.position = position;
+        spawn.volumeParam = layer.gainParam;
+        spawn.paramLo = layer.paramLo;
+        spawn.paramHi = layer.paramHi;
         if (voices_.Play(spawn) != kInvalidId) anySpawned = true;
     }
 

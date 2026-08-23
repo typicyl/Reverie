@@ -15,15 +15,28 @@
 #pragma once
 
 #include "Core/Types.h"
+#include "DSP/AudioEffect.h"
 
+#include <memory>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace reverie {
 
 class Mixer {
 public:
+    // Hard caps on structural size. buses_ and each bus's `sends`, plus the id/name maps, are
+    // reserved to these at construction/creation so they NEVER reallocate or rehash after the
+    // audio thread starts reading them. That removes the use-after-free / rehash-during-read
+    // crash class the audit flagged as the biggest blocker: Bus& / Bus* held across EndBlock and
+    // the index_ lookups stay valid because the underlying storage never moves. Creating past a
+    // cap fails (kInvalidId) rather than reallocating.
+    static constexpr u32 kMaxBuses = 256;
+    static constexpr u32 kMaxSendsPerBus = 16;
+    static constexpr u32 kMaxEffectsPerBus = 8;
+
     Mixer();
 
     // Builds the default tree: Master + Music, SFX, Dialogue, Ambience, UI (all under Master).
@@ -33,6 +46,19 @@ public:
     BusId CreateBus(const char* name, BusId parent); // parent kInvalidId -> Master
     BusId FindBus(const char* name) const;           // kInvalidId if not found
     u32 BusCount() const { return static_cast<u32>(buses_.size()); }
+
+    // Enumeration (control thread) for serialization/inspection. index is in [0, BusCount()), in
+    // creation order (Master first, so parents precede children). Names are used so ids need not
+    // survive a save/load. Master's parentName is empty.
+    struct BusDescriptor {
+        std::string name;
+        std::string parentName;
+        f32 gain = 1.0f;
+        bool muted = false;
+        bool soloed = false;
+        std::vector<std::pair<std::string, f32>> sends; // (dest bus name, level)
+    };
+    bool DescribeBusAt(u32 index, BusDescriptor& out) const;
 
     void SetBusVolume(BusId bus, f32 volume);
     f32 BusVolume(BusId bus) const;
@@ -49,6 +75,15 @@ public:
     void SetDuck(BusId ducked, BusId sidechain, f32 threshold, f32 amount, f32 attackMs,
                  f32 releaseMs);
     void ClearDuck(BusId ducked);
+
+    // --- per-bus DSP insert chain ---
+    // Inserts a built-in effect on a bus (processed in order, pre-fader). Returns an EffectId for
+    // later parameter changes, or kInvalidId on failure. Configure before playback (same threading
+    // contract as the rest of the mixer config; full lock-free live insertion is a later hardening).
+    EffectId AddEffect(BusId bus, EffectType type, u32 sampleRate, u32 channels);
+    void SetEffectParam(EffectId effect, u32 index, f32 value);
+    f32 EffectParam(EffectId effect, u32 index) const;
+    u32 BusEffectCount(BusId bus) const;
 
     f32 Meter(BusId bus) const; // last block's post-gain peak (0..)
 
@@ -80,7 +115,9 @@ private:
         f32 duckAmount = 0.5f;
         f32 duckAttackMs = 10.0f;
         f32 duckReleaseMs = 200.0f;
-        f32 duckGain = 1.0f; // smoothed
+        f32 duckGain = 1.0f;      // smoothed (block-rate)
+        f32 smoothedGain = 1.0f;  // audio-owned: the applied gain ramps toward the target per block
+        std::vector<std::unique_ptr<IAudioEffect>> effects; // pre-fader insert chain (reserved)
         std::vector<f32> buffer;
         f32 meterPeak = 0.0f;
     };
@@ -89,12 +126,14 @@ private:
     const Bus* Get(BusId id) const;
     void MarkTopologyDirty() { topoDirty_ = true; }
     void RebuildTopology();
-    void ComputeSoloAudibility(std::vector<bool>& audible) const;
+    void ComputeSoloAudibility(); // fills the reused audible_ scratch (no per-block allocation)
 
     std::vector<Bus> buses_;
     std::unordered_map<BusId, usize> index_;
     std::unordered_map<std::string, BusId> byName_;
-    std::vector<usize> topoOrder_; // process order (Master last)
+    std::vector<usize> topoOrder_;  // process order (Master last)
+    std::vector<bool> audible_;     // reused solo-audibility scratch (sized to buses_)
+    std::vector<IAudioEffect*> effectRegistry_; // EffectId (index+1) -> effect (stable heap ptr)
     bool topoDirty_ = true;
     BusId master_ = kInvalidId;
     BusId nextId_ = 1;

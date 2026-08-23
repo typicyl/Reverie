@@ -34,6 +34,10 @@ struct EventLayer {
     bool loop = false;
     f32 probability = 1.0f;    // 0..1 chance this layer triggers at all
     BusId bus = kInvalidId;    // routing target (kInvalidId = Master)
+    // Optional volume modulation by a game parameter (RTPC): gain *= smoothstep(paramLo,paramHi,param).
+    ParameterId gainParam = kInvalidId;
+    f32 paramLo = 0.0f;
+    f32 paramHi = 1.0f;
 };
 
 struct AudioEventDef {

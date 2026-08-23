@@ -11,6 +11,14 @@
 // (this mirrors what a single-instance binaural renderer like Resonance provides). Per audio
 // block: BeginBlock -> (per active source) SetSource + SubmitSourceAudio -> Render(stereoOut).
 // Sources are a fixed pool: AcquireSource / ReleaseSource claim and free a slot.
+//
+// THREADING CONTRACT: every method of a live renderer is invoked from a SINGLE thread - the audio
+// thread that runs the block (AcquireSource/ReleaseSource/SetListener/SetSource/SetEnvironment/
+// BeginBlock/SubmitSourceAudio/Render all run there; the engine defers control-thread requests such
+// as listener/environment/source changes and applies them on the audio thread). Implementations
+// therefore need NOT be internally synchronized. (Init/Shutdown run once at setup/teardown with the
+// device stopped.) An implementation that shares mutable state (a source pool, a DSP object) relies
+// on this contract - do not call a live renderer from two threads.
 #pragma once
 
 #include "Core/Types.h"

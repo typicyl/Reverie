@@ -141,7 +141,8 @@ int main() {
     // 8) C ABI spatial smoke.
     {
         reverie_engine* e = reverie_create();
-        reverie_config cfg = reverie_default_config();
+        reverie_config cfg;
+        reverie_default_config(&cfg);
         cfg.backend = REVERIE_BACKEND_NULL;
         reverie_init(e, &cfg);
         const reverie_sound s = reverie_load_sound_pcm(e, sine.data(), (unsigned)sine.size(), 1, kSr);

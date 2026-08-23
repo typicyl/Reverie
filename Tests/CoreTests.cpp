@@ -73,9 +73,10 @@ int main() {
         engine.StopAll();
         engine.SetMasterVolume(0.0f);
         engine.Play(snd);
+        engine.RenderOffline(buf.data(), kBlock); // first block ramps the gain down to 0 (de-zipper)
         std::fill(buf.begin(), buf.end(), 0.0f);
         engine.RenderOffline(buf.data(), kBlock);
-        Check(Energy(buf, 0, kCh) < 1e-9, "master volume 0 -> silence");
+        Check(Energy(buf, 0, kCh) < 1e-9, "master volume 0 -> silence (after gain ramp)");
         engine.SetMasterVolume(1.0f);
 
         // 3) two voices are louder than one (in-phase identical sources sum).
@@ -125,21 +126,79 @@ int main() {
         Check(!engine.IsInitialized(), "Shutdown clears initialized");
     }
 
+    // ---- Profiling stats snapshot ----------------------------------------------------
+    {
+        Engine engine;
+        Config cfg;
+        cfg.backend = Backend::Null;
+        cfg.sampleRate = kSr;
+        cfg.channels = kCh;
+        engine.Init(cfg);
+        const SoundId snd = engine.LoadSoundPCM(sine.data(), (u32)sine.size(), 1, kSr);
+        engine.Play(snd, 1.0f, true);
+        engine.Play(snd, 1.0f, true);
+        std::vector<float> b(kBlock * kCh, 0.0f);
+        engine.RenderOffline(b.data(), kBlock);
+        const EngineStats st = engine.GetStats();
+        Check(st.sampleRate == kSr && st.channels == kCh, "stats: format");
+        Check(st.activeVoices == 2 && st.realVoices + st.virtualVoices == 2, "stats: voice counts");
+        Check(st.cpuLoad >= 0.0f, "stats: cpu load is measured");
+        engine.Shutdown();
+    }
+
     // ---- C ABI (proves the flat binding boundary links + runs) -----------------------
     {
+        Check(reverie_abi_version() == REVERIE_ABI_VERSION, "C ABI: version matches header");
+        Check(reverie_result_string(REVERIE_OK) != nullptr &&
+                  reverie_result_string(REVERIE_FILE_NOT_FOUND) != nullptr,
+              "C ABI: result_string returns strings");
+
         reverie_engine* e = reverie_create();
         Check(e != nullptr, "C ABI: create");
-        reverie_config cfg = reverie_default_config();
+        Check(reverie_is_initialized(e) == 0, "C ABI: not initialized before init");
+        reverie_config cfg;
+        reverie_default_config(&cfg);
         cfg.backend = REVERIE_BACKEND_NULL;
         Check(reverie_init(e, &cfg) == REVERIE_OK, "C ABI: init(Null)");
+        Check(reverie_is_initialized(e) == 1, "C ABI: initialized after init");
         const reverie_sound s = reverie_load_sound_pcm(e, sine.data(), (unsigned)sine.size(), 1, kSr);
         Check(s != 0, "C ABI: load pcm");
         Check(reverie_play(e, s, 1.0f, 0) != 0, "C ABI: play");
         std::vector<float> buf(kBlock * kCh, 0.0f);
         reverie_render_offline(e, buf.data(), kBlock);
         Check(Energy(buf, 0, kCh) > 1.0, "C ABI: non-silent output");
+
+        // Bus getters (C ABI is now a superset of the C++ facade).
+        const reverie_bus m = reverie_master_bus(e);
+        reverie_set_bus_muted(e, m, 1);
+        Check(reverie_get_bus_muted(e, m) == 1, "C ABI: get_bus_muted reflects set");
+        reverie_set_bus_muted(e, m, 0);
+        reverie_set_bus_soloed(e, m, 1);
+        Check(reverie_get_bus_soloed(e, m) == 1, "C ABI: get_bus_soloed reflects set");
+        reverie_set_bus_soloed(e, m, 0);
+
+        // Event register + unregister round-trip (the previously-missing C-ABI unregister).
+        reverie_event_builder* b = reverie_event_builder_create(0, 0, 0);
+        const int layer = reverie_event_builder_add_layer(b, 1.0f, 0.0f, 1.0f, 0.0f, 0, 1.0f);
+        reverie_event_builder_add_sound(b, layer, s, 1.0f);
+        const reverie_event ev = reverie_event_builder_register(e, b);
+        Check(ev != 0, "C ABI: register event");
+        reverie_unregister_event(e, ev); // links + no crash
         reverie_shutdown(e);
         reverie_destroy(e);
+    }
+
+    // ---- max_voices == 0 means the SAME default on both boundaries (was 64 via C, 1 via C++) ----
+    {
+        Engine engine;
+        Config cfg;
+        cfg.backend = Backend::Null;
+        cfg.maxVoices = 0; // "use default"
+        Check(Succeeded(engine.Init(cfg)), "maxVoices=0: init");
+        const SoundId snd = engine.LoadSoundPCM(sine.data(), (u32)sine.size(), 1, kSr);
+        for (int i = 0; i < 3; ++i) engine.Play(snd);
+        Check(engine.RealVoiceCount() == 3, "maxVoices=0 -> generous default (3 voices all real, not 1)");
+        engine.Shutdown();
     }
 
     if (g_failures == 0) {
